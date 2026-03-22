@@ -1,0 +1,342 @@
+"""
+SOAR MCP Server — Configuration Manager
+
+Loads and parses mcp.conf from the app's local/ (user overrides) or
+default/ (bundled defaults) directory, following Splunk/SOAR config
+precedence rules (local beats default).
+
+Copyright 2026 Andreas Buis
+"""
+
+from __future__ import annotations
+
+import configparser
+import logging
+import os
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Optional, Set, Union
+
+logger = logging.getLogger(__name__)
+
+_CONFIG_FILENAME = "mcp.conf"
+
+# ── Valid values ───────────────────────────────────────────────────────────────
+_VALID_SEVERITIES = {"high", "medium", "low", "informational", ""}
+
+# ── All known tool names ───────────────────────────────────────────────────────
+ALL_TOOLS: list[str] = [
+    # Read-only
+    "list_cases",
+    "get_case",
+    "search_cases",
+    "list_artifacts",
+    "get_artifact",
+    "list_case_notes",
+    "list_playbooks",
+    "get_playbook_run",
+    "list_action_runs",
+    "list_users",
+    "get_soar_info",
+    # Write (controlled)
+    "add_case_note",
+    "run_playbook",
+    "update_case_status",
+    "update_case_severity",
+    "update_case_owner",
+    "create_artifact",
+]
+
+READ_ONLY_TOOLS: frozenset[str] = frozenset(
+    [
+        "list_cases",
+        "get_case",
+        "search_cases",
+        "list_artifacts",
+        "get_artifact",
+        "list_case_notes",
+        "list_playbooks",
+        "get_playbook_run",
+        "list_action_runs",
+        "list_users",
+        "get_soar_info",
+    ]
+)
+
+
+@dataclass
+class McpServerConfig:
+    """
+    Resolved configuration for the SOAR MCP Server.
+
+    Populated by McpConfigLoader.load() from the mcp.conf file.
+    All fields have safe defaults that match the bundled default/mcp.conf.
+    """
+
+    # [server] section
+    timeout: float = 60.0
+    max_results: int = 50
+    ssl_verify: Union[bool, str] = True
+    log_tool_calls: bool = True
+    protocol_version: str = "2024-11-05"
+    server_name: str = "splunk-soar-mcp-server"
+    server_version: str = "1.0.0"
+
+    # [tools] section — set of enabled tool names
+    enabled_tools: Set[str] = field(default_factory=lambda: set(READ_ONLY_TOOLS))
+
+    # [safety] section
+    advisory_disclaimer: bool = True
+    allowed_labels: list[str] = field(default_factory=list)
+    max_items_per_case: int = 20
+    min_severity: str = ""
+
+    # AI instructions — sent to the LLM in every MCP initialize response
+    ai_instructions: str = ""
+
+    @property
+    def disabled_tools(self) -> list[str]:
+        return [t for t in ALL_TOOLS if t not in self.enabled_tools]
+
+    @property
+    def write_tools_enabled(self) -> bool:
+        return bool(self.enabled_tools - READ_ONLY_TOOLS)
+
+    def to_summary_dict(self) -> dict:
+        """Return a safe, serialisable summary (no secrets)."""
+        return {
+            "enabled_tools": sorted(self.enabled_tools),
+            "disabled_tools": sorted(self.disabled_tools),
+            "max_results": self.max_results,
+            "max_items_per_case": self.max_items_per_case,
+            "write_tools_enabled": self.write_tools_enabled,
+            "advisory_disclaimer": self.advisory_disclaimer,
+            "log_tool_calls": self.log_tool_calls,
+            "protocol_version": self.protocol_version,
+            "server_name": self.server_name,
+            "server_version": self.server_version,
+            "ssl_verify": self.ssl_verify if isinstance(self.ssl_verify, bool) else "custom_path",
+            "allowed_labels": self.allowed_labels,
+            "min_severity": self.min_severity,
+            "ai_instructions": self.ai_instructions,
+        }
+
+
+class McpConfigLoader:
+    """
+    Loads and parses mcp.conf following Splunk/SOAR config precedence.
+
+    Search order:
+      1. <app_root>/local/mcp.conf   (user overrides — highest precedence)
+      2. <app_root>/default/mcp.conf (bundled defaults — fallback)
+
+    The app root is determined relative to this module's location.
+    """
+
+    def __init__(self, app_root: Optional[Path] = None) -> None:
+        if app_root is None:
+            # This file lives at <app_root>/soar_mcp_config.py
+            app_root = Path(__file__).parent
+        self._app_root = app_root
+
+    def _find_config_file(self) -> Optional[Path]:
+        """Return the highest-precedence mcp.conf path, or None if not found."""
+        for subdir in ("local", "default"):
+            candidate = self._app_root / subdir / _CONFIG_FILENAME
+            if candidate.exists():
+                logger.info("[MCP Config] Found config at: %s", candidate)
+                return candidate
+        logger.warning("[MCP Config] No mcp.conf found in local/ or default/")
+        return None
+
+    def load(self) -> McpServerConfig:
+        """
+        Load and parse mcp.conf, returning a McpServerConfig with resolved values.
+
+        Falls back to safe defaults for any missing or invalid values.
+        Never raises; always returns a valid config object.
+        """
+        config = McpServerConfig()
+        conf_path = self._find_config_file()
+
+        if conf_path is None:
+            logger.warning("[MCP Config] Using all defaults (no config file found).")
+            return config
+
+        parser = configparser.ConfigParser()
+        try:
+            parser.read(conf_path, encoding="utf-8")
+        except Exception as exc:
+            logger.error("[MCP Config] Failed to read %s: %s — using defaults.", conf_path, exc)
+            return config
+
+        # ── [server] ──────────────────────────────────────────────────────────
+        config.timeout = self._get_float(parser, "server", "timeout", 60.0, min_val=1.0, max_val=300.0)
+        config.max_results = self._get_int(parser, "server", "max_results", 50, min_val=1, max_val=500)
+        config.ssl_verify = self._parse_ssl_verify(parser.get("server", "ssl_verify", fallback="true"))
+        config.log_tool_calls = self._get_bool(parser, "server", "log_tool_calls", True)
+        config.protocol_version = parser.get("server", "protocol_version", fallback="2024-11-05").strip()
+        config.server_name = parser.get("server", "server_name", fallback="splunk-soar-mcp-server").strip()
+        config.server_version = parser.get("server", "server_version", fallback="1.0.0").strip()
+
+        # ── [tools] ───────────────────────────────────────────────────────────
+        enabled: set[str] = set()
+        for tool in ALL_TOOLS:
+            if self._get_bool(parser, "tools", tool, tool in READ_ONLY_TOOLS):
+                enabled.add(tool)
+        config.enabled_tools = enabled
+
+        # ── [safety] ──────────────────────────────────────────────────────────
+        config.advisory_disclaimer = self._get_bool(parser, "safety", "advisory_disclaimer", True)
+        config.max_items_per_case = self._get_int(parser, "safety", "max_items_per_case", 20, min_val=1, max_val=200)
+
+        raw_labels = parser.get("safety", "allowed_labels", fallback="").strip()
+        config.allowed_labels = [lbl.strip() for lbl in raw_labels.split(",") if lbl.strip()] if raw_labels else []
+
+        raw_sev = parser.get("safety", "min_severity", fallback="").strip().lower()
+        config.min_severity = raw_sev if raw_sev in _VALID_SEVERITIES else ""
+
+        # ── [server] ai_instructions ───────────────────────────────────────────
+        config.ai_instructions = parser.get("server", "ai_instructions", fallback="").strip()
+
+        logger.info(
+            "[MCP Config] Loaded: %d tools enabled, write=%s, max_results=%d",
+            len(config.enabled_tools),
+            config.write_tools_enabled,
+            config.max_results,
+        )
+
+        # Apply asset-level overrides (written by the connector from asset config)
+        config = self._apply_asset_overrides(config)
+
+        return config
+
+    def _apply_asset_overrides(self, config: "McpServerConfig") -> "McpServerConfig":
+        """
+        Apply asset-level overrides from local/asset_overrides.json.
+
+        This file is written by the connector when it reads the asset
+        configuration checkboxes (tool_* fields and ai_instructions).
+        It takes precedence over everything in mcp.conf.
+        """
+        import json as _json
+
+        overrides_path = self._app_root / "local" / "asset_overrides.json"
+        if not overrides_path.exists():
+            return config
+
+        try:
+            with open(overrides_path, encoding="utf-8") as fh:
+                overrides = _json.load(fh)
+        except Exception as exc:
+            logger.warning("[MCP Config] Could not read asset_overrides.json: %s", exc)
+            return config
+
+        # Apply tool overrides
+        tool_overrides = overrides.get("tools")
+        if isinstance(tool_overrides, dict):
+            new_enabled: set[str] = set()
+            for tool in ALL_TOOLS:
+                if tool in tool_overrides:
+                    if tool_overrides[tool]:
+                        new_enabled.add(tool)
+                else:
+                    # Not in overrides — keep current state from mcp.conf
+                    if tool in config.enabled_tools:
+                        new_enabled.add(tool)
+            config.enabled_tools = new_enabled
+            logger.info(
+                "[MCP Config] Asset overrides applied: %d tools enabled",
+                len(config.enabled_tools),
+            )
+
+        # Apply AI instructions override
+        ai_instr = overrides.get("ai_instructions")
+        if ai_instr and isinstance(ai_instr, str):
+            config.ai_instructions = ai_instr.strip()
+
+        return config
+
+    # ── Helpers ────────────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _get_bool(parser: configparser.ConfigParser, section: str, key: str, default: bool) -> bool:
+        try:
+            raw = parser.get(section, key, fallback=None)
+            if raw is None:
+                return default
+            return raw.strip().lower() in ("true", "yes", "1", "on", "enabled")
+        except Exception:
+            return default
+
+    @staticmethod
+    def _get_float(
+        parser: configparser.ConfigParser,
+        section: str,
+        key: str,
+        default: float,
+        *,
+        min_val: float = 0.0,
+        max_val: float = float("inf"),
+    ) -> float:
+        try:
+            raw = parser.get(section, key, fallback=None)
+            if raw is None:
+                return default
+            val = float(raw)
+            return max(min_val, min(val, max_val))
+        except (ValueError, TypeError):
+            return default
+
+    @staticmethod
+    def _get_int(
+        parser: configparser.ConfigParser,
+        section: str,
+        key: str,
+        default: int,
+        *,
+        min_val: int = 0,
+        max_val: int = 10_000,
+    ) -> int:
+        try:
+            raw = parser.get(section, key, fallback=None)
+            if raw is None:
+                return default
+            val = int(float(raw))
+            return max(min_val, min(val, max_val))
+        except (ValueError, TypeError):
+            return default
+
+    @staticmethod
+    def _parse_ssl_verify(raw: str) -> Union[bool, str]:
+        val = raw.strip()
+        if val.lower() in ("true", "yes", "1", "on"):
+            return True
+        if val.lower() in ("false", "no", "0", "off"):
+            return False
+        # Treat as path
+        expanded = os.path.expandvars(os.path.expanduser(val))
+        if os.path.isfile(expanded):
+            return expanded
+        logger.warning("[MCP Config] ssl_verify value '%s' not recognised — defaulting to True.", val)
+        return True
+
+
+# Module-level singleton (lazy-loaded)
+_cached_config: Optional[McpServerConfig] = None
+
+
+def get_config(reload: bool = False) -> McpServerConfig:
+    """
+    Return the cached McpServerConfig, loading it on first call.
+
+    Args:
+        reload: If True, discard the cache and reload from disk.
+
+    Returns:
+        McpServerConfig with resolved values.
+    """
+    global _cached_config
+    if _cached_config is None or reload:
+        _cached_config = McpConfigLoader().load()
+    return _cached_config

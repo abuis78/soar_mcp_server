@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html>
+<head>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:"Helvetica Neue",Arial,sans-serif;font-size:13px;background:#1a1c20;color:#c5c8cc;padding:12px}
+.card{background:#22252b;border:1px solid #2e3138;border-radius:6px;margin-bottom:10px;overflow:hidden}
+.ch{background:#1e2128;padding:8px 14px;display:flex;align-items:center;gap:8px;border-bottom:1px solid #2e3138;font-size:12px;font-weight:600;color:#e2e4e8}
+.cb{padding:12px 14px}
+.ep{background:#101520;border:1px solid #204060;border-radius:4px;padding:8px 12px;margin-bottom:10px;display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap}
+.el{font-size:10px;color:#5a7fa0;text-transform:uppercase;letter-spacing:.5px;margin-bottom:2px}
+.eu{font-family:monospace;font-size:11px;color:#64b0f4;word-break:break-all}
+.sr{display:flex;gap:8px;margin-bottom:10px;flex-wrap:wrap}
+.sb{background:#1a1d24;border:1px solid #2e3138;border-radius:4px;padding:6px 12px;min-width:80px;text-align:center}
+.sv{font-size:18px;font-weight:700;color:#e2e4e8;line-height:1.2}
+.sl{font-size:10px;color:#6a7080;text-transform:uppercase;letter-spacing:.5px;margin-top:1px}
+.tb{display:flex;border-bottom:2px solid #2e3138;gap:2px}
+.tbtn{background:none;border:none;padding:7px 13px;font-size:11px;font-weight:600;color:#6a7080;cursor:pointer;border-bottom:2px solid transparent;margin-bottom:-2px}
+.tbtn:hover{color:#c5c8cc}
+.tbtn.active{color:#4a9ef0;border-bottom-color:#4a9ef0}
+.tc{display:none;padding:12px}
+.tc.active{display:block}
+.cw{position:relative;background:#111316;border:1px solid #2e3138;border-radius:4px;overflow:hidden}
+.cb2{font-family:monospace;font-size:11px;line-height:1.6;color:#a8d8a0;white-space:pre;overflow-x:auto;padding:10px 12px;padding-right:70px}
+.cp{position:absolute;top:6px;right:6px;background:#2a3040;border:1px solid #3a4560;border-radius:4px;color:#8aabcc;font-size:10px;font-weight:600;padding:3px 8px;cursor:pointer}
+.cp:hover{background:#3a4560;color:#c5c8cc}
+.cp.ok{background:#1a3a2a;color:#4caf7d;border-color:#2d6b49}
+.hint{background:#101a28;border-left:3px solid #2a5080;padding:7px 10px;font-size:11px;color:#6080a0;margin-top:8px;border-radius:0 3px 3px 0;line-height:1.5}
+.tnote{background:#201510;border:1px solid #503020;border-radius:3px;padding:6px 10px;font-size:11px;color:#c08030;margin-top:8px}
+.tg{display:flex;flex-wrap:wrap;gap:5px;margin-top:4px}
+.stl{font-size:10px;font-weight:700;color:#5a6070;text-transform:uppercase;letter-spacing:.7px;margin-bottom:6px}
+.it{width:100%;border-collapse:collapse;font-size:11px}
+.it td{padding:4px 6px;border-bottom:1px solid #24272e;vertical-align:top}
+.it td:first-child{color:#6a7080;width:140px;white-space:nowrap}
+.it td:last-child{color:#c5c8cc;font-family:monospace;font-size:10px}
+.it tr:last-child td{border-bottom:none}
+</style>
+</head>
+<body>
+
+{{ error_html | safe }}
+{{ notice_html | safe }}
+
+<div class="card">
+  <div class="ch">
+    <span>&#9889; MCP Server</span>
+    <span style="font-size:10px;color:#5a6070;margin-left:auto">v{{ server_version }}</span>
+  </div>
+  <div class="cb">
+    <div class="ep">
+      <div>
+        <div class="el">MCP Endpoint</div>
+        <div class="eu" id="ep-url">{{ endpoint }}</div>
+      </div>
+      <button class="cp" onclick="copyId('ep-url',this)">&#10000; Copy</button>
+    </div>
+    <div class="sr">
+      <div class="sb"><div class="sv">{{ enabled_count }}</div><div class="sl">Tools Active</div></div>
+      <div class="sb"><div class="sv" style="color:#4a9ef0">{{ read_count }}</div><div class="sl">Read</div></div>
+      <div class="sb"><div class="sv" style="color:#e8a020">{{ write_count }}</div><div class="sl">Write</div></div>
+    </div>
+  </div>
+</div>
+
+<div class="card">
+  <div class="ch">&#9881; Connect Claude</div>
+  <div class="tb">
+    <button class="tbtn active" onclick="tab(this,'t-desk')">&#128421; Desktop</button>
+    <button class="tbtn" onclick="tab(this,'t-json')">&#9000; Code JSON</button>
+    <button class="tbtn" onclick="tab(this,'t-cli')">$ Code CLI</button>
+  </div>
+
+  <div id="t-desk" class="tc active">
+    <div class="stl">claude_desktop_config.json</div>
+    <div class="cw">
+      <pre class="cb2" id="d-json">{{ desktop_json }}</pre>
+      <button class="cp" onclick="copyId('d-json',this)">&#10000; Copy</button>
+    </div>
+    <div class="hint"><strong>macOS:</strong> ~/Library/Application Support/Claude/claude_desktop_config.json<br>
+    <strong>Windows:</strong> %APPDATA%\Claude\claude_desktop_config.json — restart Claude Desktop after saving.</div>
+    <div class="tnote">&#9888; Replace YOUR_SOAR_AUTH_TOKEN — Administration &#8594; User Management &#8594; Users &#8594; Authorization Tokens</div>
+  </div>
+
+  <div id="t-json" class="tc">
+    <div class="stl">~/.claude.json — mcpServers section</div>
+    <div class="cw">
+      <pre class="cb2" id="c-json">{{ code_json }}</pre>
+      <button class="cp" onclick="copyId('c-json',this)">&#10000; Copy</button>
+    </div>
+    <div class="tnote">&#9888; Replace YOUR_SOAR_AUTH_TOKEN before use</div>
+  </div>
+
+  <div id="t-cli" class="tc">
+    <div class="stl">Run once in your terminal</div>
+    <div class="cw">
+      <pre class="cb2" id="c-cli">{{ cli_cmd }}</pre>
+      <button class="cp" onclick="copyId('c-cli',this)">&#10000; Copy</button>
+    </div>
+    <div class="tnote">&#9888; Replace YOUR_SOAR_AUTH_TOKEN before running</div>
+  </div>
+</div>
+
+<div class="card">
+  <div class="ch">&#128295; Enabled Tools ({{ enabled_count }})</div>
+  <div class="cb">
+    <div class="tg">{{ enabled_pills | safe }}</div>
+    <div class="stl" style="margin-top:10px">Disabled ({{ disabled_count }})</div>
+    <div class="tg">{{ disabled_pills | safe }}</div>
+  </div>
+</div>
+
+<div class="card">
+  <div class="ch">&#8505; Settings</div>
+  <div class="cb">
+    <table class="it">
+      <tr><td>Protocol</td><td>{{ protocol }}</td></tr>
+      <tr><td>Max Results</td><td>{{ max_results }}</td></tr>
+      <tr><td>Max Items / Case</td><td>{{ max_items }}</td></tr>
+      <tr><td>Min Severity</td><td>{{ min_sev }}</td></tr>
+      <tr><td>SSL Verify</td><td>{{ ssl_verify }}</td></tr>
+      <tr><td>Log Tool Calls</td><td>{{ log_tools }}</td></tr>
+    </table>
+  </div>
+</div>
+
+<script>
+function tab(btn,id){
+  var c=btn.closest('.card');
+  c.querySelectorAll('.tbtn').forEach(function(b){b.classList.remove('active')});
+  c.querySelectorAll('.tc').forEach(function(t){t.classList.remove('active')});
+  btn.classList.add('active');
+  var el=document.getElementById(id);
+  if(el)el.classList.add('active');
+}
+function copyId(id,btn){
+  var el=document.getElementById(id);
+  if(!el)return;
+  navigator.clipboard.writeText(el.textContent).then(function(){
+    var o=btn.innerHTML;btn.classList.add('ok');btn.innerHTML='&#10003; Copied!';
+    setTimeout(function(){btn.classList.remove('ok');btn.innerHTML=o;},1800);
+  });
+}
+</script>
+</body>
+</html>

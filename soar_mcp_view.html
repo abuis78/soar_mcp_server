@@ -1,0 +1,471 @@
+<!DOCTYPE html>
+<html>
+<head>
+<style>
+/* ── Base ── */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+    font-family: "Splunk Platform Sans", "Helvetica Neue", Arial, sans-serif;
+    font-size: 13px;
+    background: #1a1c20;
+    color: #c5c8cc;
+    padding: 16px;
+}
+
+/* ── Cards ── */
+.mcp-card {
+    background: #22252b;
+    border: 1px solid #2e3138;
+    border-radius: 6px;
+    margin-bottom: 16px;
+    overflow: hidden;
+}
+.mcp-card-header {
+    background: #1e2128;
+    padding: 10px 16px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    border-bottom: 1px solid #2e3138;
+}
+.mcp-card-header h3 {
+    font-size: 13px;
+    font-weight: 600;
+    color: #e2e4e8;
+    letter-spacing: .3px;
+}
+.mcp-card-body { padding: 16px; }
+
+/* ── Status badge ── */
+.badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 2px 8px;
+    border-radius: 10px;
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: .5px;
+}
+.badge-success { background: #1a3a2a; color: #4caf7d; border: 1px solid #2d6b49; }
+.badge-error   { background: #3a1a1a; color: #e55; border: 1px solid #6b2d2d; }
+.badge-write   { background: #2d2010; color: #e8a020; border: 1px solid #6b4c10; }
+.badge-read    { background: #102038; color: #4a9ef0; border: 1px solid #204880; }
+
+/* ── Endpoint banner ── */
+.endpoint-banner {
+    background: #101520;
+    border: 1px solid #204060;
+    border-radius: 4px;
+    padding: 10px 14px;
+    margin-bottom: 16px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+.endpoint-label {
+    font-size: 11px;
+    color: #5a7fa0;
+    text-transform: uppercase;
+    letter-spacing: .6px;
+    margin-bottom: 2px;
+}
+.endpoint-url {
+    font-family: "SF Mono", "Fira Code", "Consolas", monospace;
+    font-size: 12px;
+    color: #64b0f4;
+    word-break: break-all;
+}
+
+/* ── Stats row ── */
+.stats-row {
+    display: flex;
+    gap: 12px;
+    margin-bottom: 16px;
+    flex-wrap: wrap;
+}
+.stat-box {
+    background: #1a1d24;
+    border: 1px solid #2e3138;
+    border-radius: 4px;
+    padding: 8px 14px;
+    min-width: 90px;
+    text-align: center;
+}
+.stat-value {
+    font-size: 20px;
+    font-weight: 700;
+    color: #e2e4e8;
+    line-height: 1.2;
+}
+.stat-label {
+    font-size: 10px;
+    color: #6a7080;
+    text-transform: uppercase;
+    letter-spacing: .5px;
+    margin-top: 2px;
+}
+
+/* ── Config tabs ── */
+.tab-bar {
+    display: flex;
+    border-bottom: 2px solid #2e3138;
+    margin-bottom: 0;
+    gap: 2px;
+}
+.tab-btn {
+    background: none;
+    border: none;
+    padding: 8px 16px;
+    font-size: 12px;
+    font-weight: 600;
+    color: #6a7080;
+    cursor: pointer;
+    border-bottom: 2px solid transparent;
+    margin-bottom: -2px;
+    transition: color .15s, border-color .15s;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+.tab-btn:hover { color: #c5c8cc; }
+.tab-btn.active { color: #4a9ef0; border-bottom-color: #4a9ef0; }
+
+.tab-content { display: none; padding: 14px; }
+.tab-content.active { display: block; }
+
+/* ── Code block ── */
+.code-wrap {
+    position: relative;
+    background: #111316;
+    border: 1px solid #2e3138;
+    border-radius: 4px;
+    overflow: hidden;
+}
+.code-block {
+    font-family: "SF Mono", "Fira Code", "Consolas", monospace;
+    font-size: 12px;
+    line-height: 1.6;
+    color: #a8d8a0;
+    white-space: pre;
+    overflow-x: auto;
+    padding: 12px 14px;
+    padding-right: 80px; /* room for copy btn */
+}
+
+/* ── Copy button ── */
+.copy-btn {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    background: #2a3040;
+    border: 1px solid #3a4560;
+    border-radius: 4px;
+    color: #8aabcc;
+    font-size: 11px;
+    font-weight: 600;
+    padding: 4px 10px;
+    cursor: pointer;
+    transition: background .15s, color .15s;
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    white-space: nowrap;
+}
+.copy-btn:hover { background: #3a4560; color: #c5c8cc; }
+.copy-btn.copied { background: #1a3a2a; color: #4caf7d; border-color: #2d6b49; }
+
+/* ── Tool pills ── */
+.tool-grid {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-top: 4px;
+}
+.tool-pill {
+    font-family: "SF Mono", "Fira Code", monospace;
+    font-size: 11px;
+    padding: 2px 8px;
+    border-radius: 3px;
+}
+.tool-pill-read { background: #0e1c30; color: #5090c8; border: 1px solid #1a3050; }
+.tool-pill-write { background: #201808; color: #c08030; border: 1px solid #503010; }
+.tool-pill-off { background: #1a1c20; color: #444850; border: 1px solid #2e3138; }
+
+/* ── Info table ── */
+.info-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.info-table td { padding: 5px 8px; border-bottom: 1px solid #24272e; vertical-align: top; }
+.info-table td:first-child { color: #6a7080; width: 160px; white-space: nowrap; }
+.info-table td:last-child { color: #c5c8cc; font-family: "SF Mono", monospace; font-size: 11px; }
+.info-table tr:last-child td { border-bottom: none; }
+
+/* ── Section title ── */
+.section-title {
+    font-size: 11px;
+    font-weight: 700;
+    color: #5a6070;
+    text-transform: uppercase;
+    letter-spacing: .7px;
+    margin-bottom: 8px;
+}
+
+/* ── Hint box ── */
+.hint {
+    background: #101a28;
+    border-left: 3px solid #2a5080;
+    padding: 8px 12px;
+    font-size: 11px;
+    color: #6080a0;
+    margin-top: 10px;
+    border-radius: 0 3px 3px 0;
+    line-height: 1.5;
+}
+
+/* ── Token placeholder highlight ── */
+.token-note {
+    background: #201510;
+    border: 1px solid #503020;
+    border-radius: 3px;
+    padding: 6px 10px;
+    font-size: 11px;
+    color: #c08030;
+    margin-top: 10px;
+    display: flex;
+    align-items: flex-start;
+    gap: 6px;
+}
+.icon { font-style: normal; }
+</style>
+</head>
+<body>
+
+{% for record in records %}
+
+<!-- ══ Status + Endpoint ══ -->
+<div class="mcp-card">
+    <div class="mcp-card-header">
+        <h3>SOAR MCP Server</h3>
+        {% if record.status == "success" %}
+            <span class="badge badge-success">● Active</span>
+        {% else %}
+            <span class="badge badge-error">● Error</span>
+        {% endif %}
+        <span style="margin-left:auto; font-size:11px; color:#5a6070;">v{{ record.server_version }}</span>
+    </div>
+    <div class="mcp-card-body">
+
+        <div class="endpoint-banner">
+            <div>
+                <div class="endpoint-label">MCP Endpoint</div>
+                <div class="endpoint-url">{{ record.mcp_endpoint }}</div>
+            </div>
+            <button class="copy-btn"
+                    onclick="copyText('{{ record.mcp_endpoint }}', this)">
+                <span class="icon">⎘</span> Copy URL
+            </button>
+        </div>
+
+        <div class="stats-row">
+            <div class="stat-box">
+                <div class="stat-value">{{ record.enabled_count }}</div>
+                <div class="stat-label">Tools Active</div>
+            </div>
+            <div class="stat-box">
+                <div class="stat-value" style="color:#4a9ef0;">{{ record.read_count }}</div>
+                <div class="stat-label">Read</div>
+            </div>
+            <div class="stat-box">
+                <div class="stat-value" style="color:#e8a020;">{{ record.write_count }}</div>
+                <div class="stat-label">Write</div>
+            </div>
+            <div class="stat-box">
+                <div class="stat-value">{{ record.max_results }}</div>
+                <div class="stat-label">Max Results</div>
+            </div>
+        </div>
+
+    </div>
+</div>
+
+<!-- ══ Config JSON Builder ══ -->
+<div class="mcp-card">
+    <div class="mcp-card-header">
+        <h3>⚙ Client Configuration Builder</h3>
+        <span style="font-size:11px; color:#5a6070; margin-left:auto;">Paste into your Claude config</span>
+    </div>
+
+    <div class="tab-bar">
+        <button class="tab-btn active" onclick="switchTab(this, 'tab-desktop-{{ loop.index }}')">
+            🖥 Claude Desktop
+        </button>
+        <button class="tab-btn" onclick="switchTab(this, 'tab-code-{{ loop.index }}')">
+            ⌨ Claude Code (JSON)
+        </button>
+        <button class="tab-btn" onclick="switchTab(this, 'tab-cli-{{ loop.index }}')">
+            $ Claude Code (CLI)
+        </button>
+    </div>
+
+    <!-- Claude Desktop -->
+    <div id="tab-desktop-{{ loop.index }}" class="tab-content active">
+        <div class="section-title">claude_desktop_config.json</div>
+        <div class="code-wrap">
+            <pre class="code-block" id="cd-json-{{ loop.index }}">{{ record.claude_desktop_json }}</pre>
+            <button class="copy-btn" onclick="copyBlock('cd-json-{{ loop.index }}', this)">
+                <span class="icon">⎘</span> Copy
+            </button>
+        </div>
+        <div class="hint">
+            <strong>macOS:</strong> ~/Library/Application Support/Claude/claude_desktop_config.json<br>
+            <strong>Windows:</strong> %APPDATA%\Claude\claude_desktop_config.json<br>
+            Restart Claude Desktop after saving.
+        </div>
+        <div class="token-note">
+            <span class="icon">⚠</span>
+            Replace <code>YOUR_SOAR_AUTH_TOKEN</code> with a real token from
+            <strong>Administration → User Management → Users → Authorization Tokens</strong>.
+        </div>
+    </div>
+
+    <!-- Claude Code JSON -->
+    <div id="tab-code-{{ loop.index }}" class="tab-content">
+        <div class="section-title">~/.claude.json — mcpServers section</div>
+        <div class="code-wrap">
+            <pre class="code-block" id="cc-json-{{ loop.index }}">{{ record.claude_code_json }}</pre>
+            <button class="copy-btn" onclick="copyBlock('cc-json-{{ loop.index }}', this)">
+                <span class="icon">⎘</span> Copy
+            </button>
+        </div>
+        <div class="hint">
+            Merge the <code>mcpServers</code> key into your existing ~/.claude.json.
+            If the file doesn't exist yet, paste the entire snippet.
+        </div>
+        <div class="token-note">
+            <span class="icon">⚠</span>
+            Replace <code>YOUR_SOAR_AUTH_TOKEN</code> with a real token from
+            <strong>Administration → User Management → Users → Authorization Tokens</strong>.
+        </div>
+    </div>
+
+    <!-- Claude Code CLI -->
+    <div id="tab-cli-{{ loop.index }}" class="tab-content">
+        <div class="section-title">Run once in your terminal</div>
+        <div class="code-wrap">
+            <pre class="code-block" id="cc-cli-{{ loop.index }}">{{ record.claude_code_cli }}</pre>
+            <button class="copy-btn" onclick="copyBlock('cc-cli-{{ loop.index }}', this)">
+                <span class="icon">⎘</span> Copy
+            </button>
+        </div>
+        <div class="hint">
+            This command adds SOAR to Claude Code's MCP server list permanently.
+            Run it once; no file editing needed.
+        </div>
+        <div class="token-note">
+            <span class="icon">⚠</span>
+            Replace <code>YOUR_SOAR_AUTH_TOKEN</code> with a real token before running.
+        </div>
+    </div>
+</div>
+
+<!-- ══ Active Tools ══ -->
+<div class="mcp-card">
+    <div class="mcp-card-header">
+        <h3>🔧 Enabled Tools</h3>
+    </div>
+    <div class="mcp-card-body">
+        {% if record.enabled_tools %}
+            <div class="section-title">Active ({{ record.enabled_count }})</div>
+            <div class="tool-grid">
+                {% for t in record.enabled_tools %}
+                    {% if t in ['add_case_note','run_playbook','update_case_status','update_case_severity','update_case_owner','create_artifact'] %}
+                        <span class="tool-pill tool-pill-write">{{ t }}</span>
+                    {% else %}
+                        <span class="tool-pill tool-pill-read">{{ t }}</span>
+                    {% endif %}
+                {% endfor %}
+            </div>
+        {% else %}
+            <span style="color:#5a6070; font-size:12px;">No tools enabled — check mcp.conf.</span>
+        {% endif %}
+
+        {% if record.disabled_tools %}
+            <div class="section-title" style="margin-top:14px;">Disabled ({{ record.disabled_tools|length }})</div>
+            <div class="tool-grid">
+                {% for t in record.disabled_tools %}
+                    <span class="tool-pill tool-pill-off">{{ t }}</span>
+                {% endfor %}
+            </div>
+            <div class="hint" style="margin-top:10px;">
+                Enable write tools by creating <code>local/mcp.conf</code> in the app directory and setting
+                <code>enable_&lt;tool_name&gt; = true</code> under <code>[tools]</code>.
+            </div>
+        {% endif %}
+    </div>
+</div>
+
+<!-- ══ Server Info ══ -->
+<div class="mcp-card">
+    <div class="mcp-card-header">
+        <h3>ℹ Server Settings</h3>
+    </div>
+    <div class="mcp-card-body">
+        <table class="info-table">
+            <tr><td>Server Name</td><td>{{ record.server_name }}</td></tr>
+            <tr><td>Server Version</td><td>{{ record.server_version }}</td></tr>
+            <tr><td>Protocol Version</td><td>{{ record.protocol_version }}</td></tr>
+            <tr><td>Max Results</td><td>{{ record.max_results }}</td></tr>
+            <tr><td>Max Items / Case</td><td>{{ record.max_items_per_case }}</td></tr>
+            <tr><td>Min Severity</td><td>{{ record.min_severity }}</td></tr>
+            <tr><td>SSL Verify</td><td>{{ record.ssl_verify }}</td></tr>
+            <tr><td>Log Tool Calls</td><td>{{ record.log_tool_calls }}</td></tr>
+            <tr><td>Advisory Disclaimer</td><td>{{ record.advisory_disclaimer }}</td></tr>
+        </table>
+    </div>
+</div>
+
+{% else %}
+<div class="mcp-card">
+    <div class="mcp-card-body" style="color:#5a6070; font-size:12px;">
+        No results — run the <strong>Get MCP Config</strong> action first.
+    </div>
+</div>
+{% endfor %}
+
+<script>
+/* ── Tab switching ── */
+function switchTab(btn, targetId) {
+    const card = btn.closest('.mcp-card');
+    card.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+    card.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+    btn.classList.add('active');
+    const target = document.getElementById(targetId);
+    if (target) target.classList.add('active');
+}
+
+/* ── Copy helpers ── */
+function copyText(text, btn) {
+    navigator.clipboard.writeText(text).then(() => flashCopied(btn));
+}
+
+function copyBlock(elementId, btn) {
+    const el = document.getElementById(elementId);
+    if (!el) return;
+    navigator.clipboard.writeText(el.textContent).then(() => flashCopied(btn));
+}
+
+function flashCopied(btn) {
+    const orig = btn.innerHTML;
+    btn.classList.add('copied');
+    btn.innerHTML = '<span class="icon">✓</span> Copied!';
+    setTimeout(() => {
+        btn.classList.remove('copied');
+        btn.innerHTML = orig;
+    }, 1800);
+}
+</script>
+</body>
+</html>

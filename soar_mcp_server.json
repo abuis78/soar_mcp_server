@@ -1,0 +1,264 @@
+{
+    "appid": "ff5f68f3-353c-4d89-9767-967ef5d99117",
+    "name": "SOAR MCP Server",
+    "description": "Exposes Splunk SOAR as an MCP (Model Context Protocol) server endpoint. Claude Desktop, Claude Code, or any MCP-compatible AI client connects directly to SOAR and uses analyst-focused tools to read cases, artifacts, playbooks, and optionally write notes or run playbooks. Configure tools directly via the asset configuration checkboxes below.",
+    "type": "generic",
+    "product_vendor": "Andreas Buis",
+    "product_name": "SOAR MCP Server",
+    "product_version_regex": ".*",
+    "publisher": "Andreas Buis",
+    "license": "Copyright 2026 Andreas Buis",
+    "app_version": "1.3.0",
+    "utctime_updated": "2026-03-20T00:00:00.000000Z",
+    "package_name": "phantom_soar_mcp_server",
+    "main_module": "soar_mcp_connector.py",
+    "min_phantom_version": "6.0.0",
+    "python_version": "3",
+    "logo": "soar_mcp_server.svg",
+    "logo_dark": "soar_mcp_server_dark.svg",
+    "rest_handler": "soar_mcp_handler.SoarMcpRestHandler",
+    "uber_view": "soar_mcp_uber_view.display_uber_view",
+    "contributors": [
+        {"name": "Andreas Buis"},
+        {"name": "Created with Claude, model claude-sonnet-4-6"}
+    ],
+    "pip3_dependencies": {
+        "pypi": [
+            {"module": "requests"}
+        ]
+    },
+    "configuration": {
+        "auth_token": {
+            "description": "SOAR authentication token (Administration > User Management > Users > Authorization Tokens). Used for Test Connectivity only.",
+            "data_type": "password",
+            "required": false,
+            "order": 0
+        },
+        "base_url": {
+            "description": "Base URL of this SOAR instance (e.g. https://soar.example.com). Used for Test Connectivity only.",
+            "data_type": "string",
+            "required": false,
+            "order": 1
+        },
+        "ai_instructions": {
+            "description": "Additional context sent to the AI on every MCP session (appended to the built-in instructions). Use this to describe your SOAR environment, naming conventions, severity triage rules, escalation procedures, or any SOC-specific context the AI should know. Example: 'Cases labeled phishing should always be escalated if severity is high. Owner format is firstname.lastname.'",
+            "data_type": "string",
+            "required": false,
+            "order": 2
+        },
+
+        "tool_list_cases": {
+            "description": "READ — list_cases: List SOAR cases with status/severity/label/owner filters.",
+            "data_type": "boolean",
+            "default": true,
+            "required": false,
+            "order": 10
+        },
+        "tool_get_case": {
+            "description": "READ — get_case: Get full details of a specific case by ID.",
+            "data_type": "boolean",
+            "default": true,
+            "required": false,
+            "order": 11
+        },
+        "tool_search_cases": {
+            "description": "READ — search_cases: Search cases by keyword across title and description.",
+            "data_type": "boolean",
+            "default": true,
+            "required": false,
+            "order": 12
+        },
+        "tool_list_artifacts": {
+            "description": "READ — list_artifacts: List all IOCs/observables attached to a case.",
+            "data_type": "boolean",
+            "default": true,
+            "required": false,
+            "order": 13
+        },
+        "tool_get_artifact": {
+            "description": "READ — get_artifact: Get full details of a specific artifact by ID.",
+            "data_type": "boolean",
+            "default": true,
+            "required": false,
+            "order": 14
+        },
+        "tool_list_case_notes": {
+            "description": "READ — list_case_notes: List analyst notes and comments on a case.",
+            "data_type": "boolean",
+            "default": true,
+            "required": false,
+            "order": 15
+        },
+        "tool_list_playbooks": {
+            "description": "READ — list_playbooks: List available SOAR playbooks with name and description.",
+            "data_type": "boolean",
+            "default": true,
+            "required": false,
+            "order": 16
+        },
+        "tool_get_playbook_run": {
+            "description": "READ — get_playbook_run: Get the status and results of a playbook run.",
+            "data_type": "boolean",
+            "default": true,
+            "required": false,
+            "order": 17
+        },
+        "tool_list_action_runs": {
+            "description": "READ — list_action_runs: List recent automated action runs on a case.",
+            "data_type": "boolean",
+            "default": true,
+            "required": false,
+            "order": 18
+        },
+        "tool_list_users": {
+            "description": "READ — list_users: List SOAR users with roles and email addresses.",
+            "data_type": "boolean",
+            "default": true,
+            "required": false,
+            "order": 19
+        },
+        "tool_get_soar_info": {
+            "description": "READ — get_soar_info: Get SOAR version, build number, and installed app count.",
+            "data_type": "boolean",
+            "default": true,
+            "required": false,
+            "order": 20
+        },
+
+        "tool_add_case_note": {
+            "description": "WRITE ⚠️ — add_case_note: Add a note/comment to a case. Modifies live SOAR data.",
+            "data_type": "boolean",
+            "default": false,
+            "required": false,
+            "order": 30
+        },
+        "tool_create_artifact": {
+            "description": "WRITE ⚠️ — create_artifact: Add a new artifact/IOC to a case. Modifies live SOAR data.",
+            "data_type": "boolean",
+            "default": false,
+            "required": false,
+            "order": 31
+        },
+        "tool_run_playbook": {
+            "description": "WRITE ⚠️ — run_playbook: Trigger a SOAR playbook on a case. May execute automated response actions.",
+            "data_type": "boolean",
+            "default": false,
+            "required": false,
+            "order": 32
+        },
+        "tool_update_case_owner": {
+            "description": "WRITE ⚠️ — update_case_owner: Reassign a case to a different analyst. Modifies live SOAR data.",
+            "data_type": "boolean",
+            "default": false,
+            "required": false,
+            "order": 33
+        },
+        "tool_update_case_severity": {
+            "description": "WRITE ⚠️ — update_case_severity: Change the severity level of a case. Modifies live SOAR data.",
+            "data_type": "boolean",
+            "default": false,
+            "required": false,
+            "order": 34
+        },
+        "tool_update_case_status": {
+            "description": "WRITE ⚠️ — update_case_status: Change case status (open/closed/resolved/new/in_progress). Modifies live SOAR data.",
+            "data_type": "boolean",
+            "default": false,
+            "required": false,
+            "order": 35
+        }
+    },
+    "actions": [
+        {
+            "action": "test connectivity",
+            "identifier": "test_connectivity",
+            "description": "Verifies that the SOAR MCP Server REST handler is reachable and that the configuration is valid. Also applies asset configuration (tool checkboxes) to the running server.",
+            "verbose": "Checks that the MCP REST endpoint is registered, reads asset configuration (tool enable/disable, AI instructions), and writes effective config so the REST handler picks it up. Optionally verifies the SOAR auth token if base_url and auth_token are set.",
+            "type": "test",
+            "read_only": true,
+            "parameters": {},
+            "output": [
+                {
+                    "data_path": "action_result.status",
+                    "data_type": "string",
+                    "column_name": "Status",
+                    "column_order": 0
+                },
+                {
+                    "data_path": "action_result.message",
+                    "data_type": "string",
+                    "column_name": "Message",
+                    "column_order": 1
+                },
+                {
+                    "data_path": "action_result.summary.mcp_endpoint",
+                    "data_type": "string",
+                    "column_name": "MCP Endpoint",
+                    "column_order": 2
+                },
+                {
+                    "data_path": "action_result.summary.enabled_tools",
+                    "data_type": "numeric",
+                    "column_name": "Enabled Tools",
+                    "column_order": 3
+                }
+            ],
+            "versions": "EQ(*)"
+        },
+        {
+            "action": "get mcp config",
+            "identifier": "get_mcp_config",
+            "description": "Returns the current MCP server configuration including which tools are enabled and the AI instructions. The result widget auto-generates ready-to-copy Claude Desktop and Claude Code JSON config snippets.",
+            "verbose": "Reads the effective configuration (asset config checkboxes + mcp.conf overrides) and returns the resolved state. The custom widget renders a Config Builder tab with copy buttons for Claude Desktop and Claude Code JSON snippets.",
+            "type": "investigate",
+            "read_only": true,
+            "parameters": {},
+            "output": [
+                {
+                    "data_path": "action_result.data.*.enabled_tools",
+                    "data_type": "string",
+                    "column_name": "Enabled Tools",
+                    "column_order": 0
+                },
+                {
+                    "data_path": "action_result.data.*.disabled_tools",
+                    "data_type": "string",
+                    "column_name": "Disabled Tools",
+                    "column_order": 1
+                },
+                {
+                    "data_path": "action_result.data.*.max_results",
+                    "data_type": "numeric",
+                    "column_name": "Max Results",
+                    "column_order": 2
+                },
+                {
+                    "data_path": "action_result.data.*.write_tools_enabled",
+                    "data_type": "boolean",
+                    "column_name": "Write Tools Enabled",
+                    "column_order": 3
+                },
+                {
+                    "data_path": "action_result.status",
+                    "data_type": "string",
+                    "column_name": "Status",
+                    "column_order": 4
+                },
+                {
+                    "data_path": "action_result.message",
+                    "data_type": "string",
+                    "column_name": "Message",
+                    "column_order": 5
+                }
+            ],
+            "render": {
+                "type": "custom",
+                "width": 12,
+                "height": 5,
+                "title": "MCP Config Builder",
+                "view": "soar_mcp_view.display_mcp_config"
+            },
+            "versions": "EQ(*)"
+        }
+    ]
+}
