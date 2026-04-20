@@ -34,7 +34,7 @@ logger = logging.getLogger(__name__)
 _SEVERITY_ORDER = {"high": 4, "medium": 3, "low": 2, "informational": 1, "": 0}
 
 # ── SOAR status labels ─────────────────────────────────────────────────────────
-_VALID_STATUSES = {"open", "closed", "resolved", "new", "in_progress"}
+_VALID_STATUSES = {"open", "closed", "resolved", "new"}
 _VALID_SEVERITIES = {"high", "medium", "low", "informational"}
 
 
@@ -158,8 +158,8 @@ TOOL_SCHEMAS: dict[str, dict] = {
             "properties": {
                 "status": {
                     "type": "string",
-                    "description": "Filter by status: open, closed, resolved, new, in_progress. Leave empty for all.",
-                    "enum": ["open", "closed", "resolved", "new", "in_progress", ""],
+                    "description": "Filter by status: open, closed, resolved, new. Leave empty for all.",
+                    "enum": ["open", "closed", "resolved", "new", ""],
                 },
                 "severity": {
                     "type": "string",
@@ -417,7 +417,7 @@ TOOL_SCHEMAS: dict[str, dict] = {
     "update_case_status": {
         "description": (
             "⚠️ WRITE OPERATION — Update the status of a SOAR case. "
-            "Valid statuses: open, closed, resolved, new, in_progress."
+            "Valid statuses: open, closed, resolved, new."
         ),
         "inputSchema": {
             "type": "object",
@@ -429,7 +429,7 @@ TOOL_SCHEMAS: dict[str, dict] = {
                 "status": {
                     "type": "string",
                     "description": "New status value.",
-                    "enum": ["open", "closed", "resolved", "new", "in_progress"],
+                    "enum": ["open", "closed", "resolved", "new"],
                 },
             },
             "required": ["case_id", "status"],
@@ -722,7 +722,7 @@ def tool_list_playbooks(client: SoarApiClient, config: McpServerConfig, args: di
 
     params: dict = {"page_size": config.max_results}
     if active_only:
-        params["_filter_active"] = "true"
+        params["_filter_active"] = "True"
     if category:
         params["_filter_category__icontains"] = f'"{category}"'
 
