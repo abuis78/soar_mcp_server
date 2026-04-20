@@ -534,6 +534,7 @@ def tool_list_cases(client: SoarApiClient, config: McpServerConfig, args: dict) 
         return f"Error listing cases: {err}"
 
     items = data if isinstance(data, list) else data.get("data", [])
+    total = data.get("count", len(items)) if isinstance(data, dict) else len(items)
 
     # Apply min_severity filter if configured
     if config.min_severity:
@@ -547,7 +548,8 @@ def tool_list_cases(client: SoarApiClient, config: McpServerConfig, args: dict) 
     if not items:
         return "No cases found matching the specified filters."
 
-    lines = [f"Found {len(items)} case(s):\n"]
+    suffix = f" (showing {len(items)} of {total} — use filters to narrow)" if total > limit else ""
+    lines = [f"Found {len(items)} case(s){suffix}:\n"]
     for c in items[:limit]:
         lines.append(_fmt_case(c))
     result = "\n".join(lines)
@@ -616,10 +618,12 @@ def tool_search_cases(client: SoarApiClient, config: McpServerConfig, args: dict
         return f"Error searching cases: {err}"
 
     items = data if isinstance(data, list) else data.get("data", [])
+    total = data.get("count", len(items)) if isinstance(data, dict) else len(items)
     if not items:
         return f"No cases found matching '{query}'."
 
-    lines = [f"Found {len(items)} case(s) matching '{query}':\n"]
+    suffix = f" (showing {len(items)} of {total} — refine query for more)" if total > limit else ""
+    lines = [f"Found {len(items)} case(s) matching '{query}'{suffix}:\n"]
     for c in items[:limit]:
         lines.append(_fmt_case(c))
     return "\n".join(lines) + (_disclaimer() if config.advisory_disclaimer else "")
@@ -645,10 +649,12 @@ def tool_list_artifacts(client: SoarApiClient, config: McpServerConfig, args: di
         return f"Error listing artifacts for case {case_id}: {err}"
 
     items = data if isinstance(data, list) else data.get("data", [])
+    total = data.get("count", len(items)) if isinstance(data, dict) else len(items)
     if not items:
         return f"No artifacts found for case {case_id}" + (f" of type '{art_type}'" if art_type else "") + "."
 
-    lines = [f"Found {len(items)} artifact(s) for case #{case_id}:\n"]
+    suffix = f" (showing {len(items)} of {total} — use artifact_type to narrow)" if total > limit else ""
+    lines = [f"Found {len(items)} artifact(s) for case #{case_id}{suffix}:\n"]
     for a in items:
         lines.append(_fmt_artifact(a))
     return "\n".join(lines) + (_disclaimer() if config.advisory_disclaimer else "")
@@ -692,15 +698,17 @@ def tool_list_case_notes(client: SoarApiClient, config: McpServerConfig, args: d
         return f"Error listing notes for case {case_id}: {err}"
 
     items = data if isinstance(data, list) else data.get("data", [])
+    total = data.get("count", len(items)) if isinstance(data, dict) else len(items)
     if not items:
         return f"No notes found for case #{case_id}."
 
-    lines = [f"Notes for case #{case_id} ({len(items)} total):\n"]
+    count_label = f"{len(items)} of {total}" if total > len(items) else str(len(items))
+    lines = [f"Notes for case #{case_id} ({count_label} total):\n"]
     for n in items:
         title = n.get("title") or n.get("note_title") or "(untitled)"
-        author = n.get("author") or "(unknown)"
+        author = n.get("author_name") or n.get("author") or "(unknown)"
         created = n.get("create_time") or n.get("modified_time") or "unknown"
-        content = (n.get("note") or n.get("content") or "(empty)").strip()[:500]
+        content = (n.get("content") or n.get("note") or "(empty)").strip()[:500]
         lines.append(f"  [{created}] {title} (by {author})")
         lines.append(f"    {content}")
         lines.append("")
@@ -723,10 +731,12 @@ def tool_list_playbooks(client: SoarApiClient, config: McpServerConfig, args: di
         return f"Error listing playbooks: {err}"
 
     items = data if isinstance(data, list) else data.get("data", [])
+    total = data.get("count", len(items)) if isinstance(data, dict) else len(items)
     if not items:
         return "No playbooks found."
 
-    lines = [f"Available playbooks ({len(items)}):\n"]
+    count_label = f"{len(items)} of {total}" if total > len(items) else str(len(items))
+    lines = [f"Available playbooks ({count_label}):\n"]
     for pb in items:
         status = "active" if pb.get("active") else "inactive"
         lines.append(
@@ -780,10 +790,12 @@ def tool_list_action_runs(client: SoarApiClient, config: McpServerConfig, args: 
         return f"Error listing action runs for case {case_id}: {err}"
 
     items = data if isinstance(data, list) else data.get("data", [])
+    total = data.get("count", len(items)) if isinstance(data, dict) else len(items)
     if not items:
         return f"No action runs found for case #{case_id}."
 
-    lines = [f"Action runs for case #{case_id} ({len(items)} shown):\n"]
+    count_label = f"{len(items)} of {total}" if total > len(items) else str(len(items))
+    lines = [f"Action runs for case #{case_id} ({count_label} shown):\n"]
     for ar in items:
         lines.append(
             f"  [{ar.get('create_time', 'unknown')}] {ar.get('action', 'unknown')} "
@@ -805,10 +817,12 @@ def tool_list_users(client: SoarApiClient, config: McpServerConfig, args: dict) 
         return f"Error listing users: {err}"
 
     items = data if isinstance(data, list) else data.get("data", [])
+    total = data.get("count", len(items)) if isinstance(data, dict) else len(items)
     if not items:
         return "No users found."
 
-    lines = [f"SOAR Users ({len(items)}):\n"]
+    count_label = f"{len(items)} of {total}" if total > len(items) else str(len(items))
+    lines = [f"SOAR Users ({count_label}):\n"]
     for u in items:
         roles = ", ".join(r.get("name", "") if isinstance(r, dict) else str(r) for r in (u.get("roles") or []))
         lines.append(
@@ -834,9 +848,18 @@ def tool_get_soar_info(client: SoarApiClient, config: McpServerConfig, args: dic
     app_data, _ = client.get("app", params={"page_size": 1})
     app_count = app_data.get("count", "unknown") if isinstance(app_data, dict) else "unknown"
 
+    # Fetch extended system info (requires admin token; gracefully ignore 403)
+    license_line = ""
+    sys_data, _ = client.get("system_info")
+    if isinstance(sys_data, dict):
+        license_status = sys_data.get("license_status", "")
+        license_type = sys_data.get("license_type", "")
+        if license_status:
+            license_line = f"\n  License:  {license_status}" + (f" ({license_type})" if license_type else "")
+
     return (
         f"Splunk SOAR Instance\n"
-        f"  Version:  {version} (build {build})\n"
+        f"  Version:  {version} (build {build}){license_line}\n"
         f"  Apps installed: {app_count}\n"
         f"  REST API: {client._base_url}/rest\n"
         f"  MCP Endpoint: {client._base_url}/rest/handler/phantom_soar_mcp_server/mcp"
@@ -854,8 +877,9 @@ def tool_add_case_note(client: SoarApiClient, config: McpServerConfig, args: dic
 
     body = {
         "container_id": case_id,
-        "note": note_text,
+        "content": note_text,
         "note_type": "general",
+        "note_format": "markdown",
         "phase_id": 0,
         "title": (args.get("title") or "AI-Assisted Analysis Note").strip(),
     }
@@ -970,6 +994,7 @@ def tool_create_artifact(client: SoarApiClient, config: McpServerConfig, args: d
         "type": art_type,
         "cef": cef_data,
         "source_data_identifier": f"mcp_created_{name}",
+        "run_automation": bool(args.get("run_automation", False)),
     }
     data, err = client.post("artifact", body)
     if err:

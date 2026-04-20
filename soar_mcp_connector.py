@@ -22,6 +22,7 @@ if _app_dir not in sys.path:
     sys.path.insert(0, _app_dir)
 
 from soar_mcp_config import ALL_TOOLS, READ_ONLY_TOOLS, McpConfigLoader, get_config
+from soar_mcp_handler import build_mcp_endpoint
 
 
 class SoarMcpConnector(BaseConnector):
@@ -40,12 +41,78 @@ class SoarMcpConnector(BaseConnector):
 
     def initialize(self) -> bool:
         asset_cfg = self.get_config()
-        self._base_url = (asset_cfg.get("base_url") or "").strip().rstrip("/")
+        # Asset config field is used for Test Connectivity; fall back to the
+        # SOAR system base URL (Administration → Company Settings → Base URL).
+        self._base_url = (
+            (asset_cfg.get("base_url") or "").strip().rstrip("/")
+            or self._get_soar_base_url()
+        )
         self._auth_token = (asset_cfg.get("auth_token") or "").strip()
+        self._asset_name = self._get_asset_name()
         # Sync asset config checkboxes → local/asset_overrides.json so the
         # REST handler picks up any tool enable/disable changes immediately.
         self._write_asset_overrides(asset_cfg)
         return phantom.APP_SUCCESS
+
+    def _get_soar_base_url(self) -> str:
+        """Return the SOAR system base URL from Administration → Company Settings."""
+        try:
+            import phantom.rest as _pr
+            url = _pr.get_phantom_base_url()
+            if url:
+                return url.strip().rstrip("/")
+        except Exception:
+            pass
+        return ""
+
+    def _get_asset_name(self) -> str:
+        """Return the SOAR asset name for this connector instance."""
+        # Method 1: SOAR SDK method (newer SDK versions)
+        try:
+            name = self.get_asset_name()
+            if name:
+                return str(name)
+        except Exception:
+            pass
+
+        # Method 2: Internal connector info dict
+        try:
+            info = getattr(self, "_connector_info", {}) or {}
+            name = info.get("asset_name") or info.get("name") or ""
+            if name:
+                return str(name)
+        except Exception:
+            pass
+
+        # Method 3: Internal _connector dict (used by some SOAR versions)
+        try:
+            conn = getattr(self, "_connector", {}) or {}
+            name = conn.get("asset_name") or conn.get("name") or ""
+            if name:
+                return str(name)
+        except Exception:
+            pass
+
+        # Method 4: Query SOAR REST API via asset_id (most reliable fallback)
+        try:
+            asset_id = self.get_asset_id()
+            if asset_id and self._base_url and self._auth_token:
+                import requests as _req
+                resp = _req.get(
+                    f"{self._base_url}/rest/asset/{asset_id}",
+                    headers={"ph-auth-token": self._auth_token},
+                    verify=False,
+                    timeout=10,
+                )
+                if resp.status_code == 200:
+                    data = resp.json()
+                    name = data.get("name") or data.get("asset_name") or ""
+                    if name:
+                        return str(name)
+        except Exception:
+            pass
+
+        return ""
 
     def _write_asset_overrides(self, asset_cfg: dict) -> None:
         """
@@ -74,9 +141,20 @@ class SoarMcpConnector(BaseConnector):
 
         ai_instructions = (asset_cfg.get("ai_instructions") or "").strip()
 
+        # Build the correct MCP endpoint URL (base_url is from asset config for
+        # test connectivity; the real base_url is also detected by the handler
+        # from the incoming request and will overwrite this on first MCP call).
+        mcp_endpoint = ""
+        if self._base_url and self._asset_name:
+            mcp_endpoint = build_mcp_endpoint(self._base_url, self._asset_name)
+
         overrides = {
             "tools": tool_overrides,
             "ai_instructions": ai_instructions,
+            "asset_name": self._asset_name,
+            "base_url": self._base_url,
+            "auth_token": self._auth_token,
+            "mcp_endpoint": mcp_endpoint,
         }
 
         app_dir = os.path.dirname(os.path.abspath(__file__))
@@ -119,9 +197,10 @@ class SoarMcpConnector(BaseConnector):
         config = get_config(reload=True)
         self.save_progress(f"Config loaded. {len(config.enabled_tools)} tools enabled.")
 
-        # Build expected MCP endpoint URL
+        # Build expected MCP endpoint URL using the correct SOAR handler path
         soar_host = self._base_url or "https://<this-soar-instance>"
-        mcp_endpoint = f"{soar_host}/rest/handler/phantom_soar_mcp_server/mcp"
+        asset = self._asset_name or "<asset_name>"
+        mcp_endpoint = build_mcp_endpoint(soar_host, asset)
 
         # If a base_url and token are configured, do a quick SOAR API health check
         if self._base_url and self._auth_token:
@@ -168,6 +247,15 @@ class SoarMcpConnector(BaseConnector):
 
         config = get_config(reload=True)
         summary = config.to_summary_dict()
+
+        soar_host = self._base_url or "https://<this-soar-instance>"
+        asset = self._asset_name or "<asset_name>"
+        mcp_endpoint = build_mcp_endpoint(soar_host, asset)
+
+        # Include connection details so the widget can render copy-ready config
+        summary["mcp_endpoint"] = mcp_endpoint
+        summary["base_url"] = self._base_url
+        summary["auth_token"] = self._auth_token
 
         action_result.add_data(summary)
         action_result.set_summary({

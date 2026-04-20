@@ -5,12 +5,17 @@ Copyright 2026 Andreas Buis
 """
 
 import json
+import os
 import traceback as _tb
 
 _WRITE_TOOLS = frozenset([
     "add_case_note", "run_playbook", "update_case_status",
     "update_case_severity", "update_case_owner", "create_artifact",
 ])
+
+# Handler URL constants (must match soar_mcp_handler.py)
+_APPID = "ff5f68f3-353c-4d89-9767-967ef5d99117"
+_HANDLER_DIR = f"soarmcpserver_{_APPID}"
 
 _DEFAULT_ENABLED = [
     "list_cases", "get_case", "search_cases", "list_artifacts",
@@ -24,15 +29,49 @@ _ALL_TOOLS = _DEFAULT_ENABLED + list(_WRITE_TOOLS)
 def display_uber_view(provides, all_app_runs, context):
     """Case-level widget. Catches all errors and surfaces them in the HTML."""
     try:
-        soar_base = _get_base_url(context)
+        # ── 1. Gather all available data sources ──────────────────────────────
+        overrides = _read_asset_overrides()
         data = _find_config_data(all_app_runs)
-        has_data = bool(data)
 
-        endpoint = (
-            data.get("mcp_endpoint")
-            or (soar_base + "/rest/handler/phantom_soar_mcp_server/mcp" if soar_base else "")
-            or "https://YOUR_SOAR_HOST/rest/handler/phantom_soar_mcp_server/mcp"
+        # ── 2. Base URL — prefer phantom.rest system setting (always accurate) ─
+        soar_base = (
+            _get_base_url(context)          # phantom.rest.get_phantom_base_url()
+            or overrides.get("base_url", "")
+            or data.get("base_url", "")
+        ).rstrip("/")
+
+        # ── 3. Asset name — try every available source ────────────────────────
+        asset_name = (
+            _extract_asset_name_from_provides(provides)
+            or overrides.get("asset_name", "")
+            or data.get("asset_name", "")
+            or _extract_asset_name_from_runs(all_app_runs)
+            or _extract_asset_name_from_request(context)
         )
+        # Write debug info so we can see what SOAR passes
+        _write_provides_debug(provides, asset_name, context)
+
+        # ── 4. Build endpoint — always fresh from soar_base + asset_name ──────
+        # Never use the stored mcp_endpoint from overrides because the
+        # connector may have written it before the base_url was known.
+        if soar_base and asset_name:
+            endpoint = f"{soar_base}/rest/handler/{_HANDLER_DIR}/{asset_name}"
+        elif soar_base:
+            endpoint = f"{soar_base}/rest/handler/{_HANDLER_DIR}/YOUR_ASSET_NAME"
+        elif asset_name:
+            endpoint = f"https://YOUR_SOAR_HOST/rest/handler/{_HANDLER_DIR}/{asset_name}"
+        else:
+            endpoint = f"https://YOUR_SOAR_HOST/rest/handler/{_HANDLER_DIR}/YOUR_ASSET_NAME"
+
+        # ── 5. Auth token ─────────────────────────────────────────────────────
+        auth_token = (
+            overrides.get("auth_token")
+            or data.get("auth_token")
+            or "YOUR_SOAR_AUTH_TOKEN"
+        )
+
+        # ── 6. Has live data? ─────────────────────────────────────────────────
+        has_data = bool(soar_base and asset_name and auth_token != "YOUR_SOAR_AUTH_TOKEN")
 
         enabled = list(data.get("enabled_tools", _DEFAULT_ENABLED))
         disabled = list(data.get("disabled_tools",
@@ -40,20 +79,24 @@ def display_uber_view(provides, all_app_runs, context):
 
         desktop_json = json.dumps({"mcpServers": {"splunk-soar": {
             "url": endpoint,
-            "headers": {"ph-auth-token": "YOUR_SOAR_AUTH_TOKEN"}
+            "headers": {"ph-auth-token": auth_token}
         }}}, indent=2)
 
         code_json = json.dumps({"mcpServers": {"splunk-soar": {
             "type": "http",
             "url": endpoint,
-            "headers": {"ph-auth-token": "YOUR_SOAR_AUTH_TOKEN"}
+            "headers": {"ph-auth-token": auth_token}
         }}}, indent=2)
 
+        # Correct syntax per `claude mcp add --help`:
+        #   claude mcp add [options] <name> <url> [options-after-url]
+        # --transport goes before name; -H (header) goes after url.
         cli = (
-            "claude mcp add splunk-soar \\\n"
+            "claude mcp add \\\n"
             "  --transport http \\\n"
-            "  --url \"" + endpoint + "\" \\\n"
-            "  --header \"ph-auth-token: YOUR_SOAR_AUTH_TOKEN\""
+            "  splunk-soar \\\n"
+            "  \"" + endpoint + "\" \\\n"
+            "  -H \"ph-auth-token: " + auth_token + "\""
         )
 
         # Build tool pill HTML entirely in Python — no Jinja2 logic needed
@@ -78,8 +121,8 @@ def display_uber_view(provides, all_app_runs, context):
             "notice_html": "" if has_data else (
                 '<div style="background:#1a1a10;border:1px solid #504020;border-radius:4px;'
                 'padding:7px 10px;font-size:11px;color:#a09040;margin-bottom:12px;">'
-                'ℹ Showing default config. Run <strong>Get MCP Config</strong> '
-                'via the ACTION button for live values.</div>'
+                'ℹ Showing default config. Run <strong>Test Connectivity</strong> '
+                'on the asset to populate with live values.</div>'
             ),
             "endpoint": endpoint,
             "server_version": data.get("server_version", "1.2.0"),
@@ -124,6 +167,92 @@ def display_uber_view(provides, all_app_runs, context):
         })
 
     return "soar_mcp_uber_view.html"
+
+
+def _write_provides_debug(provides, resolved_name: str, context) -> None:
+    """Write debug info to /tmp so the asset_name source can be diagnosed."""
+    try:
+        req = context.get("request")
+        path = getattr(req, "path", "") if req else ""
+        meta_keys = sorted([k for k in (getattr(req, "META", {}) or {}) if any(
+            x in k for x in ("HOST", "PATH", "FORWARD", "USER", "ASSET"))]) if req else []
+        with open("/tmp/mcp_asset_debug.txt", "w") as f:
+            f.write(f"provides type: {type(provides)}\n")
+            f.write(f"provides repr: {repr(provides)}\n")
+            f.write(f"resolved asset_name: {resolved_name}\n")
+            f.write(f"request.path: {path}\n")
+            f.write(f"META keys (filtered): {meta_keys}\n")
+            # Try to show dir() of provides for unknown types
+            try:
+                f.write(f"provides dir: {[x for x in dir(provides) if not x.startswith('__')]}\n")
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+
+def _extract_asset_name_from_runs(all_app_runs) -> str:
+    """
+    Try to extract the asset name from the all_app_runs summary dict.
+    SOAR sometimes includes asset_name in the run summary.
+    """
+    try:
+        for run in (all_app_runs or []):
+            summary = run[0] if run and len(run) >= 1 else {}
+            if isinstance(summary, dict):
+                name = summary.get("asset_name") or summary.get("asset") or ""
+                if name and isinstance(name, str):
+                    return name.strip()
+    except Exception:
+        pass
+    return ""
+
+
+def _extract_asset_name_from_provides(provides) -> str:
+    """
+    Extract the asset name from the `provides` argument of the uber_view.
+
+    In SOAR, `provides` for an asset uber_view is the asset name string,
+    or occasionally a dict/object with a 'name' key.
+    """
+    try:
+        if isinstance(provides, str) and provides:
+            return provides.strip()
+        if isinstance(provides, dict):
+            return str(provides.get("name") or provides.get("asset_name") or "").strip()
+        # Some SOAR versions pass an object
+        name = getattr(provides, "name", None) or getattr(provides, "asset_name", None)
+        if name:
+            return str(name).strip()
+    except Exception:
+        pass
+    return ""
+
+
+def _extract_asset_name_from_request(context) -> str:
+    """
+    Try to extract the asset name from the Django request URL path.
+
+    SOAR asset pages are typically at /asset/<asset_name>/... or
+    /assets/<asset_name>/...
+    """
+    try:
+        req = context.get("request")
+        if not req:
+            return ""
+        path = getattr(req, "path", "") or ""
+        parts = [p for p in path.split("/") if p]
+        for keyword in ("asset", "assets"):
+            if keyword in parts:
+                idx = parts.index(keyword)
+                if idx + 1 < len(parts):
+                    candidate = parts[idx + 1]
+                    # Exclude numeric IDs and generic words
+                    if candidate and not candidate.isdigit() and candidate not in ("overview", "edit", "summary"):
+                        return candidate
+    except Exception:
+        pass
+    return ""
 
 
 def _get_base_url(context):
@@ -201,6 +330,24 @@ def _write_debug(info):
         pass
 
 
+def _read_asset_overrides() -> dict:
+    """
+    Read asset_overrides.json written by the connector (on Test Connectivity /
+    any action) and updated by the REST handler (on first MCP request).
+
+    Returns an empty dict if the file does not exist or cannot be parsed.
+    """
+    try:
+        app_dir = os.path.dirname(os.path.abspath(__file__))
+        path = os.path.join(app_dir, "local", "asset_overrides.json")
+        if not os.path.exists(path):
+            return {}
+        with open(path, "r", encoding="utf-8") as fh:
+            return json.load(fh)
+    except Exception:
+        return {}
+
+
 def _find_config_data(all_app_runs):
     try:
         runs = list(all_app_runs or [])
@@ -208,15 +355,28 @@ def _find_config_data(all_app_runs):
             try:
                 action_results = run[1] if len(run) >= 2 else []
                 for r in (action_results or []):
-                    if not isinstance(r, dict):
+                    try:
+                        # ActionResult objects use get_status() / get_data() / get_message()
+                        if hasattr(r, "get_status"):
+                            if r.get_status() != "success":
+                                continue
+                            msg = (r.get_message() or "") if hasattr(r, "get_message") else ""
+                            if "config" not in msg.lower():
+                                continue
+                            d = r.get_data() if hasattr(r, "get_data") else []
+                            if d and isinstance(d, list):
+                                return d[0]
+                        # Fallback: plain dict (local test / older SOAR versions)
+                        elif isinstance(r, dict):
+                            if r.get("status") != "success":
+                                continue
+                            if "config" not in (r.get("message") or "").lower():
+                                continue
+                            d = r.get("data", [])
+                            if d and isinstance(d, list):
+                                return d[0]
+                    except Exception:
                         continue
-                    if r.get("status") != "success":
-                        continue
-                    if "config" not in (r.get("message") or "").lower():
-                        continue
-                    d = r.get("data", [])
-                    if d and isinstance(d, list):
-                        return d[0]
             except Exception:
                 continue
     except Exception:
