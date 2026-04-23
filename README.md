@@ -913,7 +913,7 @@ python3 soar_mcp_handler.py --mock --port 8743
 ## Credits
 
 **Author:** Andreas Buis ([@abuis78](https://github.com/abuis78))  
-**Organization:** Splunk (DACH Solution Architect Team)  
+**Organization:** originvibe
 **Created With:** Claude (Anthropic) — model `claude-sonnet-4-6`
 
 **Special Thanks:**
@@ -944,7 +944,7 @@ Copyright 2026 Andreas Buis. All rights reserved.
 - GitHub Discussions: https://github.com/abuis78/soar_mcp_server/discussions
 
 **Enterprise Support:**
-- Contact: andreas.buis@splunk.com
+- Contact: support@originvibe.de
 - Subject: "[SOAR MCP] Your Issue Here"
 - Include: SOAR version, app version, logs, use case description
 
