@@ -22,11 +22,33 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from typing import Any, Optional
 
 import requests
 
 from soar_mcp_config import McpServerConfig
+
+# ── Security constants ─────────────────────────────────────────────────────────
+_MAX_NOTE_LENGTH = 10_000   # characters — prevents storage exhaustion (issue #11)
+_HTML_TAG_RE = re.compile(r'<[^>]+>')  # used to strip HTML from note content
+
+
+def _require_positive_int(value: Any, name: str) -> tuple[int | None, str | None]:
+    """
+    Validate that *value* is (or can be cast to) a positive integer.
+
+    Returns (int_value, None) on success or (None, error_string) on failure.
+    Prevents path-traversal attacks where string IDs like '1/../../ph_user' are
+    interpolated directly into REST API URLs (security issue #9).
+    """
+    try:
+        v = int(value)
+        if v <= 0:
+            raise ValueError
+        return v, None
+    except (TypeError, ValueError):
+        return None, f"Error: {name} must be a positive integer, got: {value!r}"
 
 logger = logging.getLogger(__name__)
 
@@ -92,7 +114,7 @@ class SoarApiClient:
         if resp.status_code == 403:
             return None, "Access denied (HTTP 403). Token may lack required permissions."
         if resp.status_code == 404:
-            return None, f"Resource not found (HTTP 404): {resp.url}"
+            return None, "Resource not found (HTTP 404)."
         if resp.status_code >= 400:
             try:
                 err_body = resp.json()
@@ -558,9 +580,9 @@ def tool_list_cases(client: SoarApiClient, config: McpServerConfig, args: dict) 
 
 def tool_get_case(client: SoarApiClient, config: McpServerConfig, args: dict) -> str:
     """Get full details of a specific case."""
-    case_id = args.get("case_id")
-    if not case_id:
-        return "Error: case_id is required."
+    case_id, err_msg = _require_positive_int(args.get("case_id"), "case_id")
+    if err_msg:
+        return err_msg
 
     data, err = client.get(f"container/{case_id}")
     if err:
@@ -579,6 +601,14 @@ def tool_get_case(client: SoarApiClient, config: McpServerConfig, args: dict) ->
     tags = ", ".join(data.get("tags", []) or []) or "none"
     custom_fields = data.get("custom_fields") or {}
 
+    # SOAR may use different field names for the modification timestamp (bug #8)
+    updated = (
+        data.get("modify_time")
+        or data.get("update_time")
+        or data.get("modified_time")
+        or "unknown"
+    )
+
     lines = [
         f"Case #{case_id}: {data.get('name', '(untitled)')}",
         f"  Status:      {data.get('status', 'unknown')}",
@@ -587,7 +617,7 @@ def tool_get_case(client: SoarApiClient, config: McpServerConfig, args: dict) ->
         f"  Label:       {data.get('label', 'none')}",
         f"  Tags:        {tags}",
         f"  Created:     {data.get('create_time', 'unknown')}",
-        f"  Updated:     {data.get('modify_time', 'unknown')}",
+        f"  Updated:     {updated}",
         f"  Artifacts:   {artifact_count}",
         f"  Notes:       {note_count}",
         f"  Description: {(data.get('description') or '(none)').strip()[:500]}",
@@ -631,9 +661,9 @@ def tool_search_cases(client: SoarApiClient, config: McpServerConfig, args: dict
 
 def tool_list_artifacts(client: SoarApiClient, config: McpServerConfig, args: dict) -> str:
     """List artifacts for a case."""
-    case_id = args.get("case_id")
-    if not case_id:
-        return "Error: case_id is required."
+    case_id, err_msg = _require_positive_int(args.get("case_id"), "case_id")
+    if err_msg:
+        return err_msg
     art_type = args.get("artifact_type", "")
     limit = config.max_items_per_case
 
@@ -662,9 +692,9 @@ def tool_list_artifacts(client: SoarApiClient, config: McpServerConfig, args: di
 
 def tool_get_artifact(client: SoarApiClient, config: McpServerConfig, args: dict) -> str:
     """Get full details of a specific artifact."""
-    artifact_id = args.get("artifact_id")
-    if not artifact_id:
-        return "Error: artifact_id is required."
+    artifact_id, err_msg = _require_positive_int(args.get("artifact_id"), "artifact_id")
+    if err_msg:
+        return err_msg
 
     data, err = client.get(f"artifact/{artifact_id}")
     if err:
@@ -676,10 +706,13 @@ def tool_get_artifact(client: SoarApiClient, config: McpServerConfig, args: dict
     cef_lines = "\n".join(f"    {k}: {v}" for k, v in cef.items()) or "    (none)"
     tags = ", ".join(data.get("tags", []) or []) or "none"
 
+    # SOAR returns the linked case as 'container' (not 'container_id') (bug #3)
+    container = data.get("container") or data.get("container_id") or "unknown"
+
     return (
         f"Artifact #{artifact_id}: {data.get('name', '(unnamed)')}\n"
         f"  Type:    {data.get('type', 'unknown')}\n"
-        f"  Case:    #{data.get('container_id', 'unknown')}\n"
+        f"  Case:    #{container}\n"
         f"  Source:  {data.get('source_data_identifier', 'unknown')}\n"
         f"  Tags:    {tags}\n"
         f"  Created: {data.get('create_time', 'unknown')}\n"
@@ -689,9 +722,9 @@ def tool_get_artifact(client: SoarApiClient, config: McpServerConfig, args: dict
 
 def tool_list_case_notes(client: SoarApiClient, config: McpServerConfig, args: dict) -> str:
     """List analyst notes on a case."""
-    case_id = args.get("case_id")
-    if not case_id:
-        return "Error: case_id is required."
+    case_id, err_msg = _require_positive_int(args.get("case_id"), "case_id")
+    if err_msg:
+        return err_msg
 
     data, err = client.get("note", params={"_filter_container_id": case_id, "page_size": config.max_items_per_case})
     if err:
@@ -706,7 +739,17 @@ def tool_list_case_notes(client: SoarApiClient, config: McpServerConfig, args: d
     lines = [f"Notes for case #{case_id} ({count_label} total):\n"]
     for n in items:
         title = n.get("title") or n.get("note_title") or "(untitled)"
-        author = n.get("author_name") or n.get("author") or "(unknown)"
+        # SOAR returns the author as a numeric user ID in the 'author' field (bug #6).
+        # If author_name is absent, fall back gracefully with a user# prefix.
+        author_raw = n.get("author_name") or n.get("author")
+        if not author_raw:
+            author = "(unknown)"
+        elif isinstance(author_raw, int) or (
+            isinstance(author_raw, str) and author_raw.isdigit()
+        ):
+            author = f"user#{author_raw}"
+        else:
+            author = str(author_raw)
         created = n.get("create_time") or n.get("modified_time") or "unknown"
         content = (n.get("content") or n.get("note") or "(empty)").strip()[:500]
         lines.append(f"  [{created}] {title} (by {author})")
@@ -722,7 +765,7 @@ def tool_list_playbooks(client: SoarApiClient, config: McpServerConfig, args: di
 
     params: dict = {"page_size": config.max_results}
     if active_only:
-        params["_filter_active"] = "True"
+        params["_filter_active"] = "true"  # SOAR requires lowercase (bug #7)
     if category:
         params["_filter_category__icontains"] = f'"{category}"'
 
@@ -750,9 +793,9 @@ def tool_list_playbooks(client: SoarApiClient, config: McpServerConfig, args: di
 
 def tool_get_playbook_run(client: SoarApiClient, config: McpServerConfig, args: dict) -> str:
     """Get status and results of a playbook run."""
-    run_id = args.get("run_id")
-    if not run_id:
-        return "Error: run_id is required."
+    run_id, err_msg = _require_positive_int(args.get("run_id"), "run_id")
+    if err_msg:
+        return err_msg
 
     data, err = client.get(f"playbook_run/{run_id}")
     if err:
@@ -761,15 +804,29 @@ def tool_get_playbook_run(client: SoarApiClient, config: McpServerConfig, args: 
         return f"Unexpected response for run {run_id}."
 
     status = data.get("status", "unknown")
-    playbook = data.get("playbook", {}) if isinstance(data.get("playbook"), dict) else {}
-    pb_name = playbook.get("name", str(data.get("playbook_id", "unknown")))
+
+    # Bug #4: SOAR returns 'playbook' as a flat integer (the playbook ID), not a
+    # nested dict.  The human-readable name is embedded in the 'message' JSON blob.
+    pb_name = str(data.get("playbook_id", "unknown"))
+    try:
+        msg_obj = json.loads(data.get("message", "{}") or "{}")
+        pb_name = msg_obj.get("playbook") or msg_obj.get("name") or pb_name
+    except (json.JSONDecodeError, TypeError):
+        pass
+
+    # Bug #4: start time may be 'start_time' or absent; fall back gracefully
+    started = (
+        data.get("start_time")
+        or data.get("create_time")
+        or "unknown"
+    )
 
     return (
         f"Playbook Run #{run_id}\n"
         f"  Playbook:    {pb_name}\n"
         f"  Status:      {status}\n"
         f"  Case:        #{data.get('container', data.get('container_id', 'unknown'))}\n"
-        f"  Started:     {data.get('create_time', 'unknown')}\n"
+        f"  Started:     {started}\n"
         f"  Finished:    {data.get('update_time', data.get('end_time', 'still running'))}\n"
         f"  Message:     {data.get('message', '(none)')}"
     )
@@ -777,9 +834,9 @@ def tool_get_playbook_run(client: SoarApiClient, config: McpServerConfig, args: 
 
 def tool_list_action_runs(client: SoarApiClient, config: McpServerConfig, args: dict) -> str:
     """List action runs for a case."""
-    case_id = args.get("case_id")
-    if not case_id:
-        return "Error: case_id is required."
+    case_id, err_msg = _require_positive_int(args.get("case_id"), "case_id")
+    if err_msg:
+        return err_msg
     limit = min(int(args.get("limit") or 20), config.max_results)
 
     data, err = client.get(
@@ -797,9 +854,20 @@ def tool_list_action_runs(client: SoarApiClient, config: McpServerConfig, args: 
     count_label = f"{len(items)} of {total}" if total > len(items) else str(len(items))
     lines = [f"Action runs for case #{case_id} ({count_label} shown):\n"]
     for ar in items:
+        # Bug #5: SOAR returns 'app' as a flat integer (app ID) not a nested dict.
+        # Try 'app_name' first, then handle dict/string/int gracefully.
+        app_field = ar.get("app")
+        if isinstance(app_field, dict):
+            app_name = app_field.get("name", "unknown")
+        elif isinstance(app_field, str) and app_field:
+            app_name = app_field
+        else:
+            app_name = ar.get("app_name") or (
+                f"app#{app_field}" if isinstance(app_field, int) else "unknown"
+            )
         lines.append(
             f"  [{ar.get('create_time', 'unknown')}] {ar.get('action', 'unknown')} "
-            f"— {ar.get('app', {}).get('name', 'unknown') if isinstance(ar.get('app'), dict) else 'unknown'} "
+            f"— {app_name} "
             f"— Status: {ar.get('status', 'unknown')}"
         )
     return "\n".join(lines)
@@ -857,12 +925,16 @@ def tool_get_soar_info(client: SoarApiClient, config: McpServerConfig, args: dic
         if license_status:
             license_line = f"\n  License:  {license_status}" + (f" ({license_type})" if license_type else "")
 
+    # Bug #2: endpoint URL was hardcoded with the wrong handler dir and asset name.
+    # Read the persisted endpoint from config (written by the connector on first connect).
+    mcp_ep = config.mcp_endpoint or f"{client._base_url}/rest/handler/<soarmcpserver_appid>/<asset_name>"
+
     return (
         f"Splunk SOAR Instance\n"
         f"  Version:  {version} (build {build}){license_line}\n"
         f"  Apps installed: {app_count}\n"
         f"  REST API: {client._base_url}/rest\n"
-        f"  MCP Endpoint: {client._base_url}/rest/handler/phantom_soar_mcp_server/mcp"
+        f"  MCP Endpoint: {mcp_ep}"
     )
 
 
@@ -870,10 +942,25 @@ def tool_get_soar_info(client: SoarApiClient, config: McpServerConfig, args: dic
 
 def tool_add_case_note(client: SoarApiClient, config: McpServerConfig, args: dict) -> str:
     """Add a note to a case."""
-    case_id = args.get("case_id")
+    case_id, err_msg = _require_positive_int(args.get("case_id"), "case_id")
+    if err_msg:
+        return err_msg
+
     note_text = (args.get("note") or "").strip()
-    if not case_id or not note_text:
-        return "Error: case_id and note are required."
+    if not note_text:
+        return "Error: note text is required."
+
+    # Security fix #10: strip HTML tags to prevent stored XSS when the note is
+    # rendered in the SOAR web UI (the CSP contains 'unsafe-inline' which would
+    # allow injected <script> tags to execute in an analyst's browser).
+    note_text = _HTML_TAG_RE.sub("", note_text)
+
+    # Security fix #11: enforce a maximum note length to prevent storage exhaustion.
+    if len(note_text) > _MAX_NOTE_LENGTH:
+        return (
+            f"Error: note exceeds maximum allowed length of {_MAX_NOTE_LENGTH} characters "
+            f"({len(note_text)} chars supplied). Please shorten the note."
+        )
 
     body = {
         "container_id": case_id,
@@ -897,10 +984,12 @@ def tool_add_case_note(client: SoarApiClient, config: McpServerConfig, args: dic
 
 def tool_run_playbook(client: SoarApiClient, config: McpServerConfig, args: dict) -> str:
     """Run a playbook on a case."""
-    case_id = args.get("case_id")
-    playbook_id = args.get("playbook_id")
-    if not case_id or not playbook_id:
-        return "Error: case_id and playbook_id are required."
+    case_id, err_msg = _require_positive_int(args.get("case_id"), "case_id")
+    if err_msg:
+        return err_msg
+    playbook_id, err_msg = _require_positive_int(args.get("playbook_id"), "playbook_id")
+    if err_msg:
+        return err_msg
 
     scope = args.get("scope", "new")
     if scope not in ("new", "all"):
@@ -926,10 +1015,12 @@ def tool_run_playbook(client: SoarApiClient, config: McpServerConfig, args: dict
 
 def tool_update_case_status(client: SoarApiClient, config: McpServerConfig, args: dict) -> str:
     """Update case status."""
-    case_id = args.get("case_id")
+    case_id, err_msg = _require_positive_int(args.get("case_id"), "case_id")
+    if err_msg:
+        return err_msg
     status = (args.get("status") or "").lower()
-    if not case_id or not status:
-        return "Error: case_id and status are required."
+    if not status:
+        return "Error: status is required."
     if status not in _VALID_STATUSES:
         return f"Error: Invalid status '{status}'. Valid: {', '.join(sorted(_VALID_STATUSES))}"
 
@@ -944,10 +1035,12 @@ def tool_update_case_status(client: SoarApiClient, config: McpServerConfig, args
 
 def tool_update_case_severity(client: SoarApiClient, config: McpServerConfig, args: dict) -> str:
     """Update case severity."""
-    case_id = args.get("case_id")
+    case_id, err_msg = _require_positive_int(args.get("case_id"), "case_id")
+    if err_msg:
+        return err_msg
     severity = (args.get("severity") or "").lower()
-    if not case_id or not severity:
-        return "Error: case_id and severity are required."
+    if not severity:
+        return "Error: severity is required."
     if severity not in _VALID_SEVERITIES:
         return f"Error: Invalid severity '{severity}'. Valid: {', '.join(sorted(_VALID_SEVERITIES))}"
 
@@ -962,10 +1055,12 @@ def tool_update_case_severity(client: SoarApiClient, config: McpServerConfig, ar
 
 def tool_update_case_owner(client: SoarApiClient, config: McpServerConfig, args: dict) -> str:
     """Update case owner."""
-    case_id = args.get("case_id")
+    case_id, err_msg = _require_positive_int(args.get("case_id"), "case_id")
+    if err_msg:
+        return err_msg
     owner = (args.get("owner") or "").strip()
-    if not case_id or not owner:
-        return "Error: case_id and owner are required."
+    if not owner:
+        return "Error: owner is required."
 
     data, err = client.post(f"container/{case_id}", {"owner_name": owner})
     if err:
@@ -978,12 +1073,14 @@ def tool_update_case_owner(client: SoarApiClient, config: McpServerConfig, args:
 
 def tool_create_artifact(client: SoarApiClient, config: McpServerConfig, args: dict) -> str:
     """Create a new artifact on a case."""
-    case_id = args.get("case_id")
+    case_id, err_msg = _require_positive_int(args.get("case_id"), "case_id")
+    if err_msg:
+        return err_msg
     name = (args.get("name") or "").strip()
     art_type = (args.get("artifact_type") or "").strip()
     cef_data = args.get("cef_data") or {}
-    if not case_id or not name or not art_type:
-        return "Error: case_id, name, and artifact_type are required."
+    if not name or not art_type:
+        return "Error: name and artifact_type are required."
     if not isinstance(cef_data, dict):
         cef_data = {}
 

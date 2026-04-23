@@ -94,6 +94,9 @@ class McpServerConfig:
     # AI instructions — sent to the LLM in every MCP initialize response
     ai_instructions: str = ""
 
+    # MCP endpoint URL (persisted from asset_overrides.json after first connect)
+    mcp_endpoint: str = ""
+
     @property
     def disabled_tools(self) -> list[str]:
         return [t for t in ALL_TOOLS if t not in self.enabled_tools]
@@ -254,6 +257,11 @@ class McpConfigLoader:
         ai_instr = overrides.get("ai_instructions")
         if ai_instr and isinstance(ai_instr, str):
             config.ai_instructions = ai_instr.strip()
+
+        # Persist MCP endpoint URL so tools can display it
+        mcp_ep = overrides.get("mcp_endpoint")
+        if mcp_ep and isinstance(mcp_ep, str):
+            config.mcp_endpoint = mcp_ep.strip()
 
         return config
 

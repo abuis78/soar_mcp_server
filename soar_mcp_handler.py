@@ -45,6 +45,10 @@ _JSONRPC_INVALID_PARAMS   = -32602
 _JSONRPC_INTERNAL_ERROR   = -32603
 
 
+class _InvalidParamsError(Exception):
+    """Raised when a JSON-RPC call has invalid or missing parameters (maps to -32602)."""
+
+
 def build_mcp_endpoint(base_url: str, asset_name: str) -> str:
     return f"{base_url.rstrip('/')}/rest/handler/{_HANDLER_DIR}/{asset_name}"
 
@@ -155,6 +159,9 @@ class SoarMcpRestHandler(dict):
             else:
                 return self._error(rpc_id, _JSONRPC_METHOD_NOT_FOUND,
                                    f"Method not found: {rpc_method}")
+        except _InvalidParamsError as exc:
+            # Fix #12: return -32602 Invalid Params for bad tool call arguments
+            return self._error(rpc_id, _JSONRPC_INVALID_PARAMS, str(exc))
         except Exception as exc:
             logger.exception("[SOAR MCP] Error in method %s: %s", rpc_method, exc)
             return self._error(rpc_id, _JSONRPC_INTERNAL_ERROR, "Internal server error")
@@ -203,11 +210,12 @@ class SoarMcpRestHandler(dict):
 
     def _handle_tools_call(self, params: dict, client: SoarApiClient,
                            config: McpServerConfig) -> dict:
-        tool_name = params.get("name", "")
+        tool_name = (params.get("name") or "").strip()
         arguments = params.get("arguments") or {}
 
         if not tool_name:
-            raise ValueError("tools/call requires 'name' parameter")
+            # Return -32602 Invalid Params (not -32603 Internal Server Error) (fix #12)
+            raise _InvalidParamsError("tools/call requires a non-empty 'name' parameter")
 
         if tool_name not in config.enabled_tools:
             if tool_name in TOOL_SCHEMAS:
