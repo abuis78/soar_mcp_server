@@ -97,6 +97,19 @@ class McpServerConfig:
     # MCP endpoint URL (persisted from asset_overrides.json after first connect)
     mcp_endpoint: str = ""
 
+    # ── Scoped MCP token settings (v1.5.0+) ───────────────────────────────
+    # When enabled, incoming auth headers are first checked against the
+    # app's local token store; matching scoped tokens get tool restrictions
+    # and per-token audit. Legacy full-access SOAR ph-auth-token continues
+    # to work as a fallback unless scoped_tokens_required is also True.
+    scoped_tokens_enabled: bool = True
+    scoped_tokens_required: bool = False
+    legacy_full_token_warn: bool = True
+    # Default lifetime for newly minted tokens (days)
+    token_default_lifetime_days: int = 90
+    # Per-token rate limit (requests per minute). 0 disables.
+    token_rate_limit_per_minute: int = 120
+
     @property
     def disabled_tools(self) -> list[str]:
         return [t for t in ALL_TOOLS if t not in self.enabled_tools]
@@ -201,6 +214,20 @@ class McpConfigLoader:
 
         # ── [server] ai_instructions ───────────────────────────────────────────
         config.ai_instructions = parser.get("server", "ai_instructions", fallback="").strip()
+
+        # ── [tokens] scoped MCP tokens (v1.5.0+) ──────────────────────────────
+        config.scoped_tokens_enabled = self._get_bool(
+            parser, "tokens", "scoped_tokens_enabled", True)
+        config.scoped_tokens_required = self._get_bool(
+            parser, "tokens", "scoped_tokens_required", False)
+        config.legacy_full_token_warn = self._get_bool(
+            parser, "tokens", "legacy_full_token_warn", True)
+        config.token_default_lifetime_days = self._get_int(
+            parser, "tokens", "default_lifetime_days", 90,
+            min_val=1, max_val=3650)
+        config.token_rate_limit_per_minute = self._get_int(
+            parser, "tokens", "rate_limit_per_minute", 120,
+            min_val=0, max_val=10000)
 
         logger.info(
             "[MCP Config] Loaded: %d tools enabled, write=%s, max_results=%d",
