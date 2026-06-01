@@ -893,6 +893,16 @@ python3 soar_mcp_handler.py --mock --port 8743
 
 ## Changelog
 
+### v1.5.0 (2026-06-01)
+- ✨ **Scoped MCP tokens** — per-user, revocable, optionally tool-restricted tokens. New actions: `mint mcp token`, `list mcp tokens`, `revoke mcp token`
+- ✨ **Per-call audit logging** on `soar_mcp.audit` logger with sanitised args; never logs the token
+- ✨ **Per-token rate limit** (default 120 req/min, sliding window; configurable in `[tokens]` section)
+- ✨ **Cursor support** in the Config Builder widget (new default tab; uses `${env:SOAR_MCP_TOKEN}` so tokens never land on disk)
+- 🔒 Bound SOAR call token encrypted at rest with Fernet (new `cryptography` dependency)
+- 🔒 Token store file `chmod 600`; atomic writes; constant-time hash comparison
+- 🐛 Documented SOAR's outer Django auth reality: only `ph-auth-token` reaches the handler; `Authorization: Bearer` is rejected upstream as "Invalid JWT"
+- 🐛 Tolerate (and ignore) `Mcp-Session-Id` header from Streamable HTTP clients
+
 ### v1.4.15 (2026-04-20)
 - ✨ Asset-based configuration with UI checkboxes
 - ✨ AI Instructions field for SOC-specific context injection
