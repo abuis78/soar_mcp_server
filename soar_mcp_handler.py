@@ -32,7 +32,17 @@ if _app_dir not in sys.path:
 from soar_mcp_config import McpServerConfig, get_config
 from soar_mcp_tools import TOOL_SCHEMAS, SoarApiClient, call_tool
 
+try:
+    from soar_mcp_tokens import TokenStore, TokenVerification, sanitise_args_for_audit
+except Exception:  # noqa: BLE001
+    TokenStore = None  # type: ignore[misc,assignment]
+    TokenVerification = None  # type: ignore[misc,assignment]
+
+    def sanitise_args_for_audit(args):  # type: ignore[no-redef]
+        return args
+
 logger = logging.getLogger(__name__)
+audit_logger = logging.getLogger("soar_mcp.audit")
 
 # ── Handler URL constants ──────────────────────────────────────────────────────
 _APPID = "ff5f68f3-353c-4d89-9767-967ef5d99117"
@@ -86,12 +96,23 @@ class SoarMcpRestHandler(dict):
         # Extract HTTP method
         method = getattr(request, "method", "POST").upper() if request else "POST"
 
-        # Extract auth token from Django META (HTTP_PH_AUTH_TOKEN)
+        # Extract auth token from Django META.
+        #
+        # SOAR's outer Django auth layer authenticates requests *before* they
+        # reach this handler. In practice it only honours `ph-auth-token`;
+        # `Authorization: Bearer <token>` is rejected upstream with
+        # "Invalid JWT" and never gets here, so the previous Bearer fallback
+        # was dead code. We still read both keys so a future SOAR release
+        # (or a reverse proxy that rewrites headers) can pass either form.
         meta = getattr(request, "META", {}) or {}
         auth_token = (
             meta.get("HTTP_PH_AUTH_TOKEN", "")
             or meta.get("HTTP_AUTHORIZATION", "").replace("Bearer ", "").strip()
         ).strip()
+
+        # Cursor / Streamable HTTP MCP clients may send Mcp-Session-Id;
+        # we don't track sessions server-side but accept and ignore it.
+        session_id = meta.get("HTTP_MCP_SESSION_ID", "")
 
         # Extract base URL from request for API callbacks
         soar_base = self._extract_base_url(request)
@@ -136,13 +157,49 @@ class SoarMcpRestHandler(dict):
 
         logger.info("[SOAR MCP] %s (id=%s)", rpc_method, rpc_id)
 
-        # Require auth for all methods except initialize
+        # Require auth for all methods except initialize/notifications/ping
         if not auth_token:
             return self._error(rpc_id, -32000,
                 "Missing ph-auth-token header. Add it to your MCP client configuration.")
 
+        # Resolve auth: scoped MCP token (preferred) or legacy SOAR ph-auth-token.
+        # Scoped tokens are looked up in the app's local token store; if found,
+        # the bound SOAR service token is used to call the SOAR API and tool
+        # access is further restricted to the scoped allow-list.
+        token_verification = None
+        soar_call_token = auth_token
+        if TokenStore is not None and config.scoped_tokens_enabled:
+            try:
+                store = TokenStore.default()
+                token_verification = store.verify(auth_token)
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("[SOAR MCP] Token store error: %s", exc)
+                token_verification = None
+
+            if token_verification is not None:
+                if not token_verification.valid:
+                    audit_logger.warning(
+                        "[SOAR MCP] auth=reject reason=%s rpc_method=%s",
+                        token_verification.reason, rpc_method,
+                    )
+                    return self._error(rpc_id, -32000,
+                        f"MCP token rejected: {token_verification.reason}")
+                soar_call_token = token_verification.soar_call_token or auth_token
+
+        if token_verification is None and config.scoped_tokens_required:
+            audit_logger.warning(
+                "[SOAR MCP] auth=reject reason=legacy_token_blocked rpc_method=%s",
+                rpc_method,
+            )
+            return self._error(rpc_id, -32000,
+                "This SOAR MCP instance requires a scoped MCP token. "
+                "Ask a SOAR admin to mint one with the 'mint mcp token' action.")
+
+        if token_verification is None and config.legacy_full_token_warn:
+            logger.info("[SOAR MCP] Legacy full ph-auth-token used (rpc_method=%s)", rpc_method)
+
         # Build SOAR API client for tool calls
-        client = SoarApiClient(soar_base, auth_token, config)
+        client = SoarApiClient(soar_base, soar_call_token, config)
 
         # Dispatch JSON-RPC method
         try:
@@ -151,9 +208,11 @@ class SoarMcpRestHandler(dict):
             elif rpc_method == "notifications/initialized":
                 return {}   # Notification — empty response is correct
             elif rpc_method == "tools/list":
-                result = self._handle_tools_list(config)
+                result = self._handle_tools_list(config, token_verification)
             elif rpc_method == "tools/call":
-                result = self._handle_tools_call(params, client, config)
+                result = self._handle_tools_call(
+                    params, client, config, token_verification,
+                )
             elif rpc_method == "ping":
                 result = {}
             else:
@@ -198,18 +257,25 @@ class SoarMcpRestHandler(dict):
             "instructions": instructions,
         }
 
-    def _handle_tools_list(self, config: McpServerConfig) -> dict:
+    def _handle_tools_list(self, config: McpServerConfig,
+                           token_verification=None) -> dict:
+        # Scoped token allow-list intersects with asset-config enabled tools.
+        allowed = set(config.enabled_tools)
+        if token_verification is not None and token_verification.allowed_tools is not None:
+            allowed &= set(token_verification.allowed_tools)
+
         tools = [
             {"name": name, "description": schema["description"],
              "inputSchema": schema["inputSchema"]}
             for name, schema in TOOL_SCHEMAS.items()
-            if name in config.enabled_tools
+            if name in allowed
         ]
         logger.info("[SOAR MCP] tools/list → %d tools", len(tools))
         return {"tools": tools}
 
     def _handle_tools_call(self, params: dict, client: SoarApiClient,
-                           config: McpServerConfig) -> dict:
+                           config: McpServerConfig,
+                           token_verification=None) -> dict:
         tool_name = (params.get("name") or "").strip()
         arguments = params.get("arguments") or {}
 
@@ -223,10 +289,34 @@ class SoarMcpRestHandler(dict):
                         f"asset configuration and run Test Connectivity.")
             else:
                 text = f"Unknown tool '{tool_name}'. Call tools/list to see available tools."
+            self._audit_tool_call(token_verification, tool_name, arguments,
+                                  outcome="denied:disabled")
             return {"content": [{"type": "text", "text": text}], "isError": True}
 
+        if (token_verification is not None
+                and token_verification.allowed_tools is not None
+                and tool_name not in token_verification.allowed_tools):
+            text = (f"Tool '{tool_name}' is not in this MCP token's allow-list. "
+                    f"Allowed: {sorted(token_verification.allowed_tools) or 'none'}")
+            self._audit_tool_call(token_verification, tool_name, arguments,
+                                  outcome="denied:scoped")
+            return {"content": [{"type": "text", "text": text}], "isError": True}
+
+        self._audit_tool_call(token_verification, tool_name, arguments, outcome="ok")
         result_text = call_tool(tool_name, arguments, client, config)
         return {"content": [{"type": "text", "text": result_text}], "isError": False}
+
+    @staticmethod
+    def _audit_tool_call(token_verification, tool_name: str,
+                         arguments: dict, *, outcome: str) -> None:
+        """Emit a structured audit line. Never logs the token itself."""
+        token_id = getattr(token_verification, "token_id", None) if token_verification else None
+        label = getattr(token_verification, "label", None) if token_verification else None
+        audit_logger.info(
+            "[SOAR MCP] tool_call outcome=%s tool=%s token_id=%s label=%s args=%s",
+            outcome, tool_name, token_id or "legacy", label or "-",
+            json.dumps(sanitise_args_for_audit(arguments), default=str)[:500],
+        )
 
     # ── Helpers ────────────────────────────────────────────────────────────────
 
