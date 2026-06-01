@@ -299,7 +299,10 @@ body {
     </div>
 
     <div class="tab-bar">
-        <button class="tab-btn active" onclick="switchTab(this, 'tab-desktop-{{ loop.index }}')">
+        <button class="tab-btn active" onclick="switchTab(this, 'tab-cursor-{{ loop.index }}')">
+            ▷ Cursor
+        </button>
+        <button class="tab-btn" onclick="switchTab(this, 'tab-desktop-{{ loop.index }}')">
             🖥 Claude Desktop
         </button>
         <button class="tab-btn" onclick="switchTab(this, 'tab-code-{{ loop.index }}')">
@@ -310,8 +313,30 @@ body {
         </button>
     </div>
 
+    <!-- Cursor -->
+    <div id="tab-cursor-{{ loop.index }}" class="tab-content active">
+        <div class="section-title">~/.cursor/mcp.json — mcpServers section</div>
+        <div class="code-wrap">
+            <pre class="code-block" id="cur-json-{{ loop.index }}">{{ record.cursor_json }}</pre>
+            <button class="copy-btn" onclick="copyBlock('cur-json-{{ loop.index }}', this)">
+                <span class="icon">⎘</span> Copy
+            </button>
+        </div>
+        <div class="hint">
+            Merge the <code>mcpServers</code> key into <code>~/.cursor/mcp.json</code>,
+            then set the token in your shell:
+            <pre class="code-block" style="margin-top:6px;">{{ record.cursor_export_hint }}</pre>
+            Restart Cursor.
+        </div>
+        <div class="token-note">
+            <span class="icon">✓</span>
+            Token comes from <code>${env:SOAR_MCP_TOKEN}</code> at runtime — no secret written to disk.
+            Mint a scoped token with the <strong>'mint mcp token'</strong> action on this app.
+        </div>
+    </div>
+
     <!-- Claude Desktop -->
-    <div id="tab-desktop-{{ loop.index }}" class="tab-content active">
+    <div id="tab-desktop-{{ loop.index }}" class="tab-content">
         <div class="section-title">claude_desktop_config.json</div>
         <div class="code-wrap">
             <pre class="code-block" id="cd-json-{{ loop.index }}">{{ record.claude_desktop_json }}</pre>
