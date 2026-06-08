@@ -171,7 +171,10 @@ class SoarMcpRestHandler(dict):
         if TokenStore is not None and config.scoped_tokens_enabled:
             try:
                 store = TokenStore.default()
-                token_verification = store.verify(auth_token)
+                token_verification = store.verify(
+                    auth_token,
+                    rate_limit=config.token_rate_limit_per_minute,
+                )
             except Exception as exc:  # noqa: BLE001
                 logger.exception("[SOAR MCP] Token store error: %s", exc)
                 token_verification = None

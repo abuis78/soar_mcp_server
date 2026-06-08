@@ -218,6 +218,12 @@ class TokenSummary:
 
 @dataclass
 class _StoreState:
+    # Known trade-off: the Fernet encryption key is stored in the same file as
+    # the encrypted values. This means file-read access is equivalent to
+    # plaintext access. The file is chmod 600 and atomic-written, which limits
+    # exposure to OS-level file access. A managed KMS or separate key file
+    # (env var) would be stronger — acceptable for a SOAR app context where
+    # no KMS is available.
     fernet_key: str = ""
     tokens: list[dict] = field(default_factory=list)
     version: int = _STORE_VERSION

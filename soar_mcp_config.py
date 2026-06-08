@@ -102,7 +102,7 @@ class McpServerConfig:
     # app's local token store; matching scoped tokens get tool restrictions
     # and per-token audit. Legacy full-access SOAR ph-auth-token continues
     # to work as a fallback unless scoped_tokens_required is also True.
-    scoped_tokens_enabled: bool = True
+    scoped_tokens_enabled: bool = False  # opt-in; see default/mcp.conf [tokens]
     scoped_tokens_required: bool = False
     legacy_full_token_warn: bool = True
     # Default lifetime for newly minted tokens (days)

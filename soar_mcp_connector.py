@@ -234,6 +234,16 @@ class SoarMcpConnector(BaseConnector):
             except Exception as exc:
                 self.save_progress(f"SOAR API check failed: {exc} — verifying config only.")
 
+        # Purge expired/revoked tokens older than 90 days (lazy housekeeping)
+        purged = 0
+        if TokenStore is not None and config.scoped_tokens_enabled:
+            try:
+                purged = TokenStore.default().purge_expired()
+                if purged:
+                    self.save_progress(f"Purged {purged} expired/revoked MCP token(s).")
+            except Exception as exc:
+                self.save_progress(f"Token purge skipped: {exc}")
+
         action_result.add_data({
             "mcp_endpoint": mcp_endpoint,
             "enabled_tools": sorted(config.enabled_tools),
@@ -243,6 +253,7 @@ class SoarMcpConnector(BaseConnector):
             "mcp_endpoint": mcp_endpoint,
             "enabled_tools": len(config.enabled_tools),
             "write_tools_enabled": config.write_tools_enabled,
+            "tokens_purged": purged,
         })
         return action_result.set_status(
             phantom.APP_SUCCESS,

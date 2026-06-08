@@ -9,7 +9,7 @@
     "publisher": "Andreas Buis",
     "license": "Copyright 2026 Andreas Buis",
     "app_version": "1.5.0",
-    "utctime_updated": "2026-06-01T00:00:00.000000Z",
+    "utctime_updated": "2026-06-08T00:00:00.000000Z",
     "package_name": "phantom_soar_mcp_server",
     "main_module": "soar_mcp_connector.py",
     "min_phantom_version": "6.0.0",
