@@ -217,7 +217,7 @@ class McpConfigLoader:
 
         # ── [tokens] scoped MCP tokens (v1.5.0+) ──────────────────────────────
         config.scoped_tokens_enabled = self._get_bool(
-            parser, "tokens", "scoped_tokens_enabled", True)
+            parser, "tokens", "scoped_tokens_enabled", False)
         config.scoped_tokens_required = self._get_bool(
             parser, "tokens", "scoped_tokens_required", False)
         config.legacy_full_token_warn = self._get_bool(

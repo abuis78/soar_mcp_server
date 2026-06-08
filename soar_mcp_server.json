@@ -177,7 +177,7 @@
         "scoped_tokens_enabled": {
             "description": "v1.5.0+ \u2014 Enable scoped MCP tokens (per-user, revocable, optionally tool-restricted). Tokens are minted by the 'mint mcp token' action. When enabled, presented headers are first looked up in the token store; legacy SOAR ph-auth-tokens still work as a fallback unless scoped_tokens_required is also set.",
             "data_type": "boolean",
-            "default": true,
+            "default": false,
             "required": false,
             "order": 40
         },
