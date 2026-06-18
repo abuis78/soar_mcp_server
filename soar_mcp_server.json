@@ -30,9 +30,6 @@
         "pypi": [
             {
                 "module": "requests"
-            },
-            {
-                "module": "cryptography"
             }
         ]
     },
