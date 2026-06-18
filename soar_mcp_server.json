@@ -8,8 +8,8 @@
     "product_version_regex": ".*",
     "publisher": "Andreas Buis",
     "license": "Copyright 2026 Andreas Buis",
-    "app_version": "1.4.17",
-    "utctime_updated": "2026-04-23T00:00:00.000000Z",
+    "app_version": "1.5.0",
+    "utctime_updated": "2026-06-08T00:00:00.000000Z",
     "package_name": "phantom_soar_mcp_server",
     "main_module": "soar_mcp_connector.py",
     "min_phantom_version": "6.0.0",
@@ -170,6 +170,20 @@
             "default": false,
             "required": false,
             "order": 35
+        },
+        "scoped_tokens_enabled": {
+            "description": "v1.5.0+ \u2014 Enable scoped MCP tokens (per-user, revocable, optionally tool-restricted). Tokens are minted by the 'mint mcp token' action. When enabled, presented headers are first looked up in the token store; legacy SOAR ph-auth-tokens still work as a fallback unless scoped_tokens_required is also set.",
+            "data_type": "boolean",
+            "default": false,
+            "required": false,
+            "order": 40
+        },
+        "scoped_tokens_required": {
+            "description": "v1.5.0+ \u2014 Reject any request that does not present a recognised scoped MCP token. Use after migrating all clients off shared ph-auth-tokens. Default off so upgrades do not break existing integrations.",
+            "data_type": "boolean",
+            "default": false,
+            "required": false,
+            "order": 41
         }
     },
     "actions": [
@@ -262,6 +276,102 @@
                 "title": "MCP Config Builder",
                 "view": "soar_mcp_view.display_mcp_config"
             },
+            "versions": "EQ(*)"
+        },
+        {
+            "action": "mint mcp token",
+            "identifier": "mint_mcp_token",
+            "description": "Mint a scoped MCP token bound to a specific SOAR user. The raw token is returned ONCE in the action result and must be copied immediately. Subsequent requests from the MCP client that present this token will be authorised as the bound user with the optional tool allow-list.",
+            "verbose": "Creates a new entry in the app's local token store. The bound SOAR ph-auth-token is encrypted at rest with a Fernet key generated on first mint. allowed_tools should be a comma-separated list of tool names or left blank to permit all asset-enabled tools.",
+            "type": "generic",
+            "read_only": false,
+            "parameters": {
+                "label": {
+                    "description": "Human-readable label, e.g. 'alice@cursor-laptop'.",
+                    "data_type": "string",
+                    "required": true,
+                    "order": 0
+                },
+                "soar_user_id": {
+                    "description": "SOAR user identifier the token acts on behalf of.",
+                    "data_type": "string",
+                    "required": true,
+                    "order": 1
+                },
+                "bound_soar_auth_token": {
+                    "description": "The SOAR ph-auth-token used downstream when calling SOAR APIs. If omitted, falls back to the asset config auth_token.",
+                    "data_type": "password",
+                    "required": false,
+                    "order": 2
+                },
+                "allowed_tools": {
+                    "description": "Comma-separated tool allow-list (e.g. 'list_cases,get_case,list_artifacts'). Blank = all asset-enabled tools.",
+                    "data_type": "string",
+                    "required": false,
+                    "order": 3
+                },
+                "lifetime_days": {
+                    "description": "Token validity in days. 0 means never expires.",
+                    "data_type": "numeric",
+                    "default": 90,
+                    "required": false,
+                    "order": 4
+                }
+            },
+            "output": [
+                {"data_path": "action_result.status", "data_type": "string", "column_name": "Status", "column_order": 0},
+                {"data_path": "action_result.message", "data_type": "string", "column_name": "Message", "column_order": 1},
+                {"data_path": "action_result.data.*.token_id", "data_type": "string", "column_name": "Token ID", "column_order": 2},
+                {"data_path": "action_result.data.*.raw_token", "data_type": "string", "column_name": "Raw Token (shown once)", "column_order": 3},
+                {"data_path": "action_result.data.*.expires_at", "data_type": "numeric", "column_name": "Expires", "column_order": 4},
+                {"data_path": "action_result.data.*.cursor_mcp_json_snippet", "data_type": "string", "column_name": "Cursor mcp.json", "column_order": 5}
+            ],
+            "versions": "EQ(*)"
+        },
+        {
+            "action": "list mcp tokens",
+            "identifier": "list_mcp_tokens",
+            "description": "List all scoped MCP tokens in the store with metadata (id, label, allowed tools, last-used, expiry). Never returns raw tokens or their hashes.",
+            "type": "investigate",
+            "read_only": true,
+            "parameters": {
+                "include_revoked": {
+                    "description": "If true, include revoked tokens in the listing.",
+                    "data_type": "boolean",
+                    "default": false,
+                    "required": false,
+                    "order": 0
+                }
+            },
+            "output": [
+                {"data_path": "action_result.status", "data_type": "string", "column_name": "Status", "column_order": 0},
+                {"data_path": "action_result.data.*.id", "data_type": "string", "column_name": "Token ID", "column_order": 1},
+                {"data_path": "action_result.data.*.label", "data_type": "string", "column_name": "Label", "column_order": 2},
+                {"data_path": "action_result.data.*.soar_user_id", "data_type": "string", "column_name": "Bound User", "column_order": 3},
+                {"data_path": "action_result.data.*.last_used_at", "data_type": "numeric", "column_name": "Last Used", "column_order": 4},
+                {"data_path": "action_result.data.*.is_active", "data_type": "boolean", "column_name": "Active", "column_order": 5}
+            ],
+            "versions": "EQ(*)"
+        },
+        {
+            "action": "revoke mcp token",
+            "identifier": "revoke_mcp_token",
+            "description": "Revoke a scoped MCP token by ID. The token is immediately invalidated; subsequent requests presenting it will be rejected with a JSON-RPC -32000 'revoked' error.",
+            "type": "generic",
+            "read_only": false,
+            "parameters": {
+                "token_id": {
+                    "description": "Token ID to revoke (from 'list mcp tokens').",
+                    "data_type": "string",
+                    "required": true,
+                    "order": 0
+                }
+            },
+            "output": [
+                {"data_path": "action_result.status", "data_type": "string", "column_name": "Status", "column_order": 0},
+                {"data_path": "action_result.message", "data_type": "string", "column_name": "Message", "column_order": 1},
+                {"data_path": "action_result.data.*.token_id", "data_type": "string", "column_name": "Token ID", "column_order": 2}
+            ],
             "versions": "EQ(*)"
         }
     ]

@@ -24,6 +24,11 @@ if _app_dir not in sys.path:
 from soar_mcp_config import ALL_TOOLS, READ_ONLY_TOOLS, McpConfigLoader, get_config
 from soar_mcp_handler import build_mcp_endpoint
 
+try:
+    from soar_mcp_tokens import TokenStore
+except Exception:  # noqa: BLE001
+    TokenStore = None  # type: ignore[misc,assignment]
+
 
 class SoarMcpConnector(BaseConnector):
     """
@@ -182,6 +187,9 @@ class SoarMcpConnector(BaseConnector):
         dispatch = {
             "test_connectivity": self._handle_test_connectivity,
             "get_mcp_config": self._handle_get_mcp_config,
+            "mint_mcp_token": self._handle_mint_mcp_token,
+            "list_mcp_tokens": self._handle_list_mcp_tokens,
+            "revoke_mcp_token": self._handle_revoke_mcp_token,
         }
         handler = dispatch.get(action_id)
         if handler:
@@ -226,6 +234,16 @@ class SoarMcpConnector(BaseConnector):
             except Exception as exc:
                 self.save_progress(f"SOAR API check failed: {exc} — verifying config only.")
 
+        # Purge expired/revoked tokens older than 90 days (lazy housekeeping)
+        purged = 0
+        if TokenStore is not None and config.scoped_tokens_enabled:
+            try:
+                purged = TokenStore.default().purge_expired()
+                if purged:
+                    self.save_progress(f"Purged {purged} expired/revoked MCP token(s).")
+            except Exception as exc:
+                self.save_progress(f"Token purge skipped: {exc}")
+
         action_result.add_data({
             "mcp_endpoint": mcp_endpoint,
             "enabled_tools": sorted(config.enabled_tools),
@@ -235,6 +253,7 @@ class SoarMcpConnector(BaseConnector):
             "mcp_endpoint": mcp_endpoint,
             "enabled_tools": len(config.enabled_tools),
             "write_tools_enabled": config.write_tools_enabled,
+            "tokens_purged": purged,
         })
         return action_result.set_status(
             phantom.APP_SUCCESS,
@@ -264,6 +283,123 @@ class SoarMcpConnector(BaseConnector):
             "max_results": config.max_results,
         })
         return action_result.set_status(phantom.APP_SUCCESS, "MCP config loaded successfully.")
+
+    # ── Scoped MCP token actions (v1.5.0+) ────────────────────────────────
+
+    def _handle_mint_mcp_token(self, param: dict) -> bool:
+        action_result = self.add_action_result(ActionResult(dict(param)))
+        if TokenStore is None:
+            return action_result.set_status(
+                phantom.APP_ERROR,
+                "Token store unavailable (soar_mcp_tokens.py failed to import).")
+
+        label = (param.get("label") or "").strip()
+        soar_user_id = (param.get("soar_user_id") or "").strip()
+        bound_token = (param.get("bound_soar_auth_token") or self._auth_token or "").strip()
+        allowed_raw = (param.get("allowed_tools") or "").strip()
+        try:
+            lifetime_days = int(param.get("lifetime_days") or 90)
+        except (TypeError, ValueError):
+            lifetime_days = 90
+
+        if not label:
+            return action_result.set_status(phantom.APP_ERROR, "label is required.")
+        if not soar_user_id:
+            return action_result.set_status(phantom.APP_ERROR, "soar_user_id is required.")
+        if not bound_token:
+            return action_result.set_status(
+                phantom.APP_ERROR,
+                "No bound SOAR auth token provided and no asset auth_token configured. "
+                "Provide bound_soar_auth_token explicitly.")
+
+        allowed_tools = None
+        if allowed_raw:
+            req = [t.strip() for t in allowed_raw.split(",") if t.strip()]
+            unknown = [t for t in req if t not in ALL_TOOLS]
+            if unknown:
+                return action_result.set_status(
+                    phantom.APP_ERROR, f"Unknown tools in allow-list: {unknown}")
+            allowed_tools = req
+
+        try:
+            store = TokenStore.default()
+            minted = store.mint(
+                label=label,
+                soar_user_id=soar_user_id,
+                soar_call_token=bound_token,
+                allowed_tools=allowed_tools,
+                lifetime_days=lifetime_days,
+            )
+        except Exception as exc:
+            return action_result.set_status(phantom.APP_ERROR, f"Mint failed: {exc}")
+
+        endpoint = build_mcp_endpoint(self._base_url or "", self._asset_name or "")
+        cursor_snippet = json.dumps({
+            "mcpServers": {
+                "splunk-soar": {
+                    "url": endpoint or "<MCP_ENDPOINT>",
+                    "headers": {"ph-auth-token": "${env:SOAR_MCP_TOKEN}"},
+                }
+            }
+        }, indent=2)
+
+        action_result.add_data({
+            "token_id": minted.id,
+            "label": minted.label,
+            "raw_token": minted.raw_token,           # shown ONCE
+            "expires_at": minted.expires_at,
+            "allowed_tools": minted.allowed_tools,
+            "soar_user_id": minted.soar_user_id,
+            "mcp_endpoint": endpoint,
+            "cursor_mcp_json_snippet": cursor_snippet,
+            "shell_export_hint": f'export SOAR_MCP_TOKEN="{minted.raw_token}"',
+        })
+        action_result.set_summary({"token_id": minted.id, "label": minted.label})
+        return action_result.set_status(
+            phantom.APP_SUCCESS,
+            f"Minted MCP token {minted.id}. Copy now - the raw token is shown only this once.")
+
+    def _handle_list_mcp_tokens(self, param: dict) -> bool:
+        action_result = self.add_action_result(ActionResult(dict(param)))
+        if TokenStore is None:
+            return action_result.set_status(
+                phantom.APP_ERROR,
+                "Token store unavailable (soar_mcp_tokens.py failed to import).")
+        include_revoked = bool(param.get("include_revoked", False))
+        try:
+            tokens = TokenStore.default().list(include_revoked=include_revoked)
+        except Exception as exc:
+            return action_result.set_status(phantom.APP_ERROR, f"List failed: {exc}")
+        for t in tokens:
+            action_result.add_data({
+                "id": t.id, "label": t.label, "soar_user_id": t.soar_user_id,
+                "allowed_tools": t.allowed_tools, "created_at": t.created_at,
+                "expires_at": t.expires_at, "last_used_at": t.last_used_at,
+                "revoked_at": t.revoked_at, "is_active": t.is_active,
+            })
+        action_result.set_summary({"token_count": len(tokens)})
+        return action_result.set_status(
+            phantom.APP_SUCCESS, f"Found {len(tokens)} MCP token(s).")
+
+    def _handle_revoke_mcp_token(self, param: dict) -> bool:
+        action_result = self.add_action_result(ActionResult(dict(param)))
+        if TokenStore is None:
+            return action_result.set_status(
+                phantom.APP_ERROR,
+                "Token store unavailable (soar_mcp_tokens.py failed to import).")
+        token_id = (param.get("token_id") or "").strip()
+        if not token_id:
+            return action_result.set_status(phantom.APP_ERROR, "token_id is required.")
+        try:
+            ok = TokenStore.default().revoke(token_id)
+        except Exception as exc:
+            return action_result.set_status(phantom.APP_ERROR, f"Revoke failed: {exc}")
+        if not ok:
+            return action_result.set_status(
+                phantom.APP_ERROR, f"Token {token_id} not found or already revoked.")
+        action_result.add_data({"token_id": token_id, "revoked": True})
+        action_result.set_summary({"token_id": token_id})
+        return action_result.set_status(phantom.APP_SUCCESS, f"Token {token_id} revoked.")
 
 
 if __name__ == "__main__":

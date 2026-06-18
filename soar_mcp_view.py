@@ -132,6 +132,19 @@ def _build_record(data: dict, status: str, message: str, soar_base_url: str = ""
         }
     }
 
+    # --- Build Cursor JSON (~/.cursor/mcp.json snippet) ---
+    # Use env var reference so the token is never written into config files.
+    cursor_config = {
+        "mcpServers": {
+            "splunk-soar": {
+                "url": mcp_endpoint,
+                "headers": {
+                    "ph-auth-token": "${env:SOAR_MCP_TOKEN}"
+                }
+            }
+        }
+    }
+
     # --- Claude Code CLI command ---
     cli_command = (
         f'claude mcp add splunk-soar \\\n'
@@ -161,4 +174,6 @@ def _build_record(data: dict, status: str, message: str, soar_base_url: str = ""
         "claude_desktop_json": json.dumps(claude_desktop_config, indent=2),
         "claude_code_json": json.dumps(claude_code_config, indent=2),
         "claude_code_cli": cli_command,
+        "cursor_json": json.dumps(cursor_config, indent=2),
+        "cursor_export_hint": 'export SOAR_MCP_TOKEN="<paste minted token here>"',
     }
