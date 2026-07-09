@@ -112,8 +112,9 @@ class SanitiseArgsTest(unittest.TestCase):
     def test_truncates_long_strings(self):
         long_val = "x" * 1000
         out = sanitise_args_for_audit({"description": long_val})
-        self.assertTrue(out["description"].endswith("<truncated>"))
-        self.assertLessEqual(len(out["description"]), 220)
+        # redact_nested (#28) truncates at _MAX_STR_LEN=500 with an original_len annotation
+        self.assertIn("truncated", out["description"])
+        self.assertLessEqual(len(out["description"]), 600)  # 500 chars + annotation overhead
 
 
 class TestWriteToolGates(unittest.TestCase):

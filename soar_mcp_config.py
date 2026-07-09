@@ -52,6 +52,20 @@ ALL_TOOLS: list[str] = [
     "export_playbook",
     "import_playbook",
     "create_container",
+    # COA Visual Editor tools (v1.6.3+)
+    "resolve_playbook_current_id",
+    "get_playbook_identity_map",
+    "get_playbook_coa_summary",
+    "list_playbook_nodes",
+    "list_playbook_edges",
+    "check_saved_generated_python_drift",
+    "check_datapath_selectability",
+    "diff_playbook_versions",
+    "verify_layout_only_change",
+    "validate_playbook_bundle",
+    "check_visual_editor_compat",
+    # Write tools (v1.6.3+)
+    "save_playbook_layout_only",
 ]
 
 READ_ONLY_TOOLS: frozenset[str] = frozenset(
@@ -72,6 +86,18 @@ READ_ONLY_TOOLS: frozenset[str] = frozenset(
         "list_assets",
         "get_action_schema",
         "export_playbook",
+        # COA Visual Editor read tools (v1.6.3+)
+        "resolve_playbook_current_id",
+        "get_playbook_identity_map",
+        "get_playbook_coa_summary",
+        "list_playbook_nodes",
+        "list_playbook_edges",
+        "check_saved_generated_python_drift",
+        "check_datapath_selectability",
+        "diff_playbook_versions",
+        "verify_layout_only_change",
+        "validate_playbook_bundle",
+        "check_visual_editor_compat",
     ]
 )
 

@@ -8,7 +8,7 @@
     "product_version_regex": ".*",
     "publisher": "Andreas Buis",
     "license": "Copyright 2026 Andreas Buis",
-    "app_version": "1.6.2",
+    "app_version": "1.6.3",
     "utctime_updated": "2026-07-09T14:00:00.000000Z",
     "package_name": "phantom_soar_mcp_server",
     "main_module": "soar_mcp_connector.py",
@@ -226,6 +226,90 @@
             "default": true,
             "required": false,
             "order": 61
+        },
+        "tool_resolve_playbook_current_id": {
+            "description": "READ \u2014 resolve_playbook_current_id: Resolve any playbook ID (current or stale) to the current Visual Editor draft. Foundation tool for all COA-based operations.",
+            "data_type": "boolean",
+            "default": true,
+            "required": false,
+            "order": 70
+        },
+        "tool_get_playbook_identity_map": {
+            "description": "READ \u2014 get_playbook_identity_map: Return all revision IDs for a playbook with the current draft clearly marked.",
+            "data_type": "boolean",
+            "default": true,
+            "required": false,
+            "order": 71
+        },
+        "tool_get_playbook_coa_summary": {
+            "description": "READ \u2014 get_playbook_coa_summary: Compact COA graph summary (node/edge counts, warnings, input/output spec, utility blocks).",
+            "data_type": "boolean",
+            "default": true,
+            "required": false,
+            "order": 72
+        },
+        "tool_list_playbook_nodes": {
+            "description": "READ \u2014 list_playbook_nodes: Structured listing of COA nodes with type, position, and optional redacted parameters.",
+            "data_type": "boolean",
+            "default": true,
+            "required": false,
+            "order": 73
+        },
+        "tool_list_playbook_edges": {
+            "description": "READ \u2014 list_playbook_edges: Structured listing of COA edges with source, target, and branch conditions.",
+            "data_type": "boolean",
+            "default": true,
+            "required": false,
+            "order": 74
+        },
+        "tool_check_saved_generated_python_drift": {
+            "description": "READ \u2014 check_saved_generated_python_drift: Detect helper functions in saved Python that are absent from COA userCode blocks and will be lost on next VPE save.",
+            "data_type": "boolean",
+            "default": true,
+            "required": false,
+            "order": 75
+        },
+        "tool_check_datapath_selectability": {
+            "description": "READ \u2014 check_datapath_selectability: Schema-based check whether a producer datapath is selectable for a consumer parameter via contains-tag matching.",
+            "data_type": "boolean",
+            "default": true,
+            "required": false,
+            "order": 76
+        },
+        "tool_diff_playbook_versions": {
+            "description": "READ \u2014 diff_playbook_versions: Semantic diff between two playbook revisions categorized as layout, metadata, graph, parameter, code, or validation changes.",
+            "data_type": "boolean",
+            "default": true,
+            "required": false,
+            "order": 77
+        },
+        "tool_verify_layout_only_change": {
+            "description": "READ \u2014 verify_layout_only_change: Strict pass/fail check that only x/y positions changed between two revisions. Safety gate for save_playbook_layout_only.",
+            "data_type": "boolean",
+            "default": true,
+            "required": false,
+            "order": 78
+        },
+        "tool_validate_playbook_bundle": {
+            "description": "READ \u2014 validate_playbook_bundle: Multi-check validation (structure, passed_validation, node warnings, Python compile, lint). Each check: passed/failed/skipped.",
+            "data_type": "boolean",
+            "default": true,
+            "required": false,
+            "order": 79
+        },
+        "tool_check_visual_editor_compat": {
+            "description": "READ \u2014 check_visual_editor_compat: Aggregator \u2014 runs resolve, COA summary, node listing, drift detection, and validation. Returns unified ok/warn/fail verdict.",
+            "data_type": "boolean",
+            "default": true,
+            "required": false,
+            "order": 80
+        },
+        "tool_save_playbook_layout_only": {
+            "description": "WRITE \u26a0\ufe0f \u2014 save_playbook_layout_only: Save node x/y positions to VPE. dry_run=true (default) is always safe. Actual write is blocked until COA write endpoint is verified in VERIFICATION.md.",
+            "data_type": "boolean",
+            "default": false,
+            "required": false,
+            "order": 90
         }
     },
     "actions": [

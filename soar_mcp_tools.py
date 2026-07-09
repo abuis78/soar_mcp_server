@@ -131,6 +131,34 @@ class SoarApiClient:
         except Exception as e:
             return None, f"Unexpected error: {type(e).__name__}"
 
+    def _coa_get(self, path: str, params: dict | None = None) -> tuple[dict | list | None, str | None]:
+        """GET from the COA Visual Editor endpoint — does NOT prepend /rest/.
+
+        The COA endpoint lives at /coa/... on the same host as /rest/...
+        Example: https://soar.example.com/rest -> https://soar.example.com/coa/playbooks/123
+
+        # VERIFY: Auth header behaviour on /coa/ paths — same ph-auth-token accepted?
+        # VERIFY: Does /coa/playbooks/{id} return 401/403/404 with same JSON structure?
+        # VERIFY: Is the base hostname the same (only path root differs)?
+        """
+        base = self._base_url  # e.g. https://soar.example.com/rest
+        if base.endswith("/rest"):
+            base = base[:-5]
+        elif "/rest/" in base:
+            base = base[: base.index("/rest/")]
+        url = f"{base}/coa/{path.lstrip('/')}"
+        try:
+            resp = self._session.get(url, params=params, timeout=self._config.timeout)
+            return self._handle_response(resp)
+        except requests.exceptions.Timeout:
+            return None, f"COA endpoint timed out after {self._config.timeout}s"
+        except requests.exceptions.SSLError as e:
+            return None, f"SSL error reaching COA endpoint: {e}"
+        except requests.exceptions.ConnectionError as e:
+            return None, f"Connection error reaching COA endpoint: {e}"
+        except Exception as e:
+            return None, f"Unexpected error reaching COA endpoint: {type(e).__name__}"
+
     def _handle_response(self, resp: requests.Response) -> tuple[Any, str | None]:
         if resp.status_code == 401:
             return None, "Authentication failed (HTTP 401). Check ph-auth-token in the MCP client config."
@@ -692,6 +720,294 @@ TOOL_SCHEMAS: dict[str, dict] = {
                 },
             },
             "required": ["name"],
+        },
+    },
+    # ── COA Visual Editor tools (v1.6.3+) ──────────────────────────────────────
+    "resolve_playbook_current_id": {
+        "description": (
+            "Resolve any playbook ID (current or stale) to the current Visual Editor draft. "
+            "Returns input_id, current_id, is_current, version, previous_versions, name, and "
+            "a stale warning when the input is an older revision. "
+            "Use this before any COA-based operation to ensure you target the right draft."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "playbook_id": {
+                    "type": "integer",
+                    "description": "Playbook ID to resolve (may be current or a previous revision).",
+                },
+            },
+            "required": ["playbook_id"],
+        },
+    },
+    "get_playbook_identity_map": {
+        "description": (
+            "Return a complete version chain for a playbook — all known revision IDs "
+            "sorted by version, with the current draft clearly marked. "
+            "Accepts either a playbook name (exact match) or a numeric ID."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "playbook": {
+                    "type": "string",
+                    "description": "Exact playbook name to look up all versions for.",
+                },
+                "playbook_id": {
+                    "type": "integer",
+                    "description": "Any playbook ID (current or stale) — name is resolved from this.",
+                },
+            },
+        },
+    },
+    "get_playbook_coa_summary": {
+        "description": (
+            "Return a compact, structured COA graph summary for the current Visual Editor draft. "
+            "Includes node count, edge count, custom-name count, warning/error counts, "
+            "input/output specs, trigger type, validation status, and utility block metadata. "
+            "Does not require downloading a full export archive."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "playbook_id": {
+                    "type": "integer",
+                    "description": "Playbook ID to summarise (current or stale — resolved automatically).",
+                },
+            },
+            "required": ["playbook_id"],
+        },
+    },
+    "list_playbook_nodes": {
+        "description": (
+            "List the COA nodes (action, code, decision, prompt, format, start, end, etc.) "
+            "for the current Visual Editor draft in a structured JSON format. "
+            "Sorted by visual position (y, x, id). Sensitive parameter values are redacted."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "playbook_id": {
+                    "type": "integer",
+                    "description": "Playbook ID (current or stale — resolved automatically).",
+                },
+                "include_parameters": {
+                    "type": "boolean",
+                    "description": "Include node parameter values (redacted for sensitive keys). Default: false.",
+                    "default": False,
+                },
+                "type_filter": {
+                    "type": "string",
+                    "description": "Return only nodes of this type (e.g. action, code, decision, start, end).",
+                },
+                "function_name_contains": {
+                    "type": "string",
+                    "description": "Return only nodes whose functionName contains this substring.",
+                },
+            },
+            "required": ["playbook_id"],
+        },
+    },
+    "list_playbook_edges": {
+        "description": (
+            "List the COA edges (connections) for the current Visual Editor draft. "
+            "Each edge includes source node, target node, branch condition, and edge type. "
+            "Sorted by source, target, then id."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "playbook_id": {
+                    "type": "integer",
+                    "description": "Playbook ID (current or stale — resolved automatically).",
+                },
+                "edge_from": {
+                    "type": "string",
+                    "description": "Return only edges from this source function name.",
+                },
+                "edge_to": {
+                    "type": "string",
+                    "description": "Return only edges to this target function name.",
+                },
+            },
+            "required": ["playbook_id"],
+        },
+    },
+    "check_saved_generated_python_drift": {
+        "description": (
+            "Detect drift between the Python saved on disk and what SOAR would regenerate "
+            "from the COA userCode blocks. Helper functions defined outside userCode blocks "
+            "are silently dropped when the Visual Editor saves the playbook. "
+            "Returns a list of external_helper_candidates that are at risk."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "playbook_id": {
+                    "type": "integer",
+                    "description": "Playbook ID (current or stale — resolved automatically).",
+                },
+            },
+            "required": ["playbook_id"],
+        },
+    },
+    "check_datapath_selectability": {
+        "description": (
+            "Check whether a datapath from a producer action is selectable in the VPE "
+            "for a specific consumer parameter, using contains-tag schema matching. "
+            "Returns selectable (true/false/unknown), reason, and both contains-tag lists. "
+            "Phase A: schema-only; edge provenance is not checked."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "producer_app_id": {
+                    "type": "integer",
+                    "description": "App ID of the action that produces the data.",
+                },
+                "producer_action": {
+                    "type": "string",
+                    "description": "Action name of the producer.",
+                },
+                "consumer_app_id": {
+                    "type": "integer",
+                    "description": "App ID of the action that consumes the data.",
+                },
+                "consumer_action": {
+                    "type": "string",
+                    "description": "Action name of the consumer.",
+                },
+                "consumer_parameter": {
+                    "type": "string",
+                    "description": "Parameter name of the consumer to check selectability for.",
+                },
+                "datapath": {
+                    "type": "string",
+                    "description": "Optional datapath to match against producer output (e.g. action_result.data.*.JobID).",
+                },
+            },
+            "required": ["producer_app_id", "producer_action", "consumer_app_id", "consumer_action", "consumer_parameter"],
+        },
+    },
+    "diff_playbook_versions": {
+        "description": (
+            "Semantic diff between two playbook revisions. "
+            "Strips volatile fields (hash, timestamps) and categorizes each changed path "
+            "as: layout (x/y only), metadata, graph_structure, parameter, code_usercode, "
+            "validation_relevant, or wrapper. Returns is_layout_only flag."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "old_id": {
+                    "type": "integer",
+                    "description": "Playbook ID of the older revision.",
+                },
+                "new_id": {
+                    "type": "integer",
+                    "description": "Playbook ID of the newer revision.",
+                },
+            },
+            "required": ["old_id", "new_id"],
+        },
+    },
+    "verify_layout_only_change": {
+        "description": (
+            "Strict pass/fail check that only node x/y positions changed between two playbook revisions. "
+            "Returns ok=true only when change_categories contains exclusively 'layout'. "
+            "Any normalization error returns ok=false. "
+            "This is the safety gate required before save_playbook_layout_only."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "before_id": {
+                    "type": "integer",
+                    "description": "Playbook ID before the layout change.",
+                },
+                "after_id": {
+                    "type": "integer",
+                    "description": "Playbook ID after the layout change.",
+                },
+            },
+            "required": ["before_id", "after_id"],
+        },
+    },
+    "validate_playbook_bundle": {
+        "description": (
+            "Run a multi-check validation bundle on a playbook: "
+            "structure validation, native passed_validation flag, COA node warnings, "
+            "Python py_compile (AST parse only — no execution), and optional lint. "
+            "Each check returns passed/failed/skipped. skipped != passed."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "playbook_id": {
+                    "type": "integer",
+                    "description": "Playbook ID to validate (current or stale — resolved automatically).",
+                },
+            },
+            "required": ["playbook_id"],
+        },
+    },
+    "check_visual_editor_compat": {
+        "description": (
+            "Aggregate Visual Editor compatibility check. Fans out to: current-ID resolution, "
+            "COA summary, node/edge listing, Python drift detection, and validation bundle. "
+            "Returns a unified ok/warn/fail verdict with finding codes "
+            "(stale_id, custom_name_count, node_warnings, node_errors, "
+            "saved_generated_python_drift, validation_failed, validation_skipped). "
+            "strict=true makes any medium finding also cause ok=false."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "playbook_id": {
+                    "type": "integer",
+                    "description": "Playbook ID to check (current or stale — resolved automatically).",
+                },
+                "strict": {
+                    "type": "boolean",
+                    "description": "If true, medium-severity findings also set ok=false. Default: false.",
+                    "default": False,
+                },
+            },
+            "required": ["playbook_id"],
+        },
+    },
+    "save_playbook_layout_only": {
+        "description": (
+            "WRITE — Save node x/y position changes to a Visual Editor playbook. "
+            "Requires verify_layout_only_change to pass first. "
+            "dry_run=true (the default) shows what would be written without writing. "
+            "Set dry_run=false only after reviewing the dry-run output. "
+            "IMPORTANT: The COA write endpoint is not yet live-verified; "
+            "actual writes return an error with instructions until VERIFICATION.md is updated."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "playbook_id": {
+                    "type": "integer",
+                    "description": "Playbook ID (must be the current draft — stale IDs are rejected).",
+                },
+                "node_positions": {
+                    "type": "object",
+                    "description": "Map of functionId -> {x: int, y: int} for nodes to reposition.",
+                },
+                "expected_hash": {
+                    "type": "string",
+                    "description": "Optional hash of the current COA state for pre-write verification.",
+                },
+                "dry_run": {
+                    "type": "boolean",
+                    "description": "Preview changes without writing. Default: true (always dry-run first).",
+                    "default": True,
+                },
+            },
+            "required": ["playbook_id", "node_positions"],
         },
     },
 }
@@ -1594,6 +1910,1424 @@ def tool_list_apps(client: SoarApiClient, config: McpServerConfig, args: dict) -
 
 
 # ==============================================================================
+# COA Visual Editor tool implementations (v1.6.3+)
+# ==============================================================================
+
+from soar_mcp_utils import redact_nested  # noqa: E402 — after stdlib imports
+
+
+# ── Shared COA helpers ─────────────────────────────────────────────────────────
+
+def _resolve_current_id(
+    client: SoarApiClient, pid: int
+) -> tuple[int, dict, str | None]:
+    """
+    Resolve *pid* to the current Visual Editor draft.
+
+    Returns (current_id, coa_data_dict, error_or_None).
+    Tries COA first, falls back to /rest/playbook/{pid} if COA is unreachable.
+    """
+    coa_data, err = client._coa_get(f"playbooks/{pid}")
+    if err or not isinstance(coa_data, dict):
+        # COA unavailable — try REST fallback
+        rest_data, rest_err = client.get(f"playbook/{pid}")
+        if rest_err or not isinstance(rest_data, dict):
+            return pid, {}, f"COA error: {err}; REST fallback error: {rest_err}"
+        # VERIFY: field name for current draft ID in /rest/playbook/{id} response
+        current_id = rest_data.get("current_id") or rest_data.get("id") or pid
+        return int(current_id), {}, None
+
+    # VERIFY: field name for current_id in COA response (may be "current_id" or nested)
+    raw_current = coa_data.get("current_id")
+    if raw_current is None:
+        raw_current = coa_data.get("id", pid)
+    return int(raw_current), coa_data, None
+
+
+def _get_coa_nodes_edges(coa_data: dict) -> tuple[list, list]:
+    """
+    Extract nodes and edges from a COA graph response.
+
+    # VERIFY: top-level key for nodes — may be "nodes", "coa.nodes", or inside a "coa" sub-key.
+    # VERIFY: top-level key for edges — may be "connections", "edges", or "links".
+    """
+    # Try direct keys first, then nested under "coa"
+    nodes = coa_data.get("nodes") or coa_data.get("coa", {}).get("nodes", [])
+    edges = (
+        coa_data.get("connections")
+        or coa_data.get("edges")
+        or coa_data.get("links")
+        or coa_data.get("coa", {}).get("connections", [])
+        or []
+    )
+    if not isinstance(nodes, list):
+        nodes = []
+    if not isinstance(edges, list):
+        edges = []
+    return nodes, edges
+
+
+def _normalize_coa_volatile(data: object, _depth: int = 0) -> object:
+    """
+    Deep-copy *data* with volatile fields stripped so two COA snapshots can be diffed.
+
+    Volatile fields: hash, create_time, update_time, modified_time,
+    create_datetime, update_datetime, utctime_updated.
+    Does NOT strip id, x, y, or any functional field.
+    """
+    _VOLATILE = frozenset({
+        "hash", "create_time", "update_time", "modified_time",
+        "create_datetime", "update_datetime", "utctime_updated",
+    })
+    if _depth > 20:
+        return data
+    if isinstance(data, dict):
+        return {
+            k: _normalize_coa_volatile(v, _depth + 1)
+            for k, v in data.items()
+            if k not in _VOLATILE
+        }
+    if isinstance(data, list):
+        return [_normalize_coa_volatile(item, _depth + 1) for item in data]
+    return data
+
+
+def _deep_diff(old: object, new: object, path: str = "") -> list[dict]:
+    """Return a flat list of {path, old_val, new_val} for differing leaves."""
+    diffs: list[dict] = []
+    if isinstance(old, dict) and isinstance(new, dict):
+        all_keys = set(old) | set(new)
+        for k in sorted(all_keys):
+            child_path = f"{path}.{k}" if path else k
+            diffs.extend(_deep_diff(old.get(k), new.get(k), child_path))
+    elif isinstance(old, list) and isinstance(new, list):
+        for i, (o, n) in enumerate(zip(old, new)):
+            diffs.extend(_deep_diff(o, n, f"{path}[{i}]"))
+        if len(old) != len(new):
+            diffs.append({"path": path, "old_len": len(old), "new_len": len(new)})
+    else:
+        if old != new:
+            diffs.append({"path": path, "old": old, "new": new})
+    return diffs
+
+
+def _categorize_diff_path(path: str) -> str:
+    """Map a diff path to a change category."""
+    lower = path.lower()
+    if any(k in lower for k in ("left", "top", "x", "y", ".x.", ".y.", "[x]", "[y]")):
+        return "layout"
+    if "usercode" in lower or "user_code" in lower:
+        return "code_usercode"
+    if "param" in lower:
+        return "parameter"
+    if any(k in lower for k in ("passed_validation", "draft_mode", "active")):
+        return "validation_relevant"
+    if any(k in lower for k in ("node", "connection", "edge", "block", "function")):
+        return "graph_structure"
+    if any(k in lower for k in ("name", "description", "label", "type", "trigger", "version")):
+        return "metadata"
+    return "wrapper"
+
+
+# ── #17 resolve_playbook_current_id ───────────────────────────────────────────
+
+def tool_resolve_playbook_current_id(
+    client: SoarApiClient, config: McpServerConfig, args: dict
+) -> str:
+    pid, err_msg = _require_positive_int(args.get("playbook_id"), "playbook_id")
+    if err_msg:
+        return err_msg
+
+    current_id, coa_data, err = _resolve_current_id(client, pid)
+
+    findings = []
+    errors = []
+    if err:
+        errors.append({"source": "coa", "message": err})
+
+    is_current = (current_id == pid)
+    if not is_current:
+        findings.append({
+            "severity": "warn",
+            "code": "stale_id",
+            "message": f"Input ID {pid} is a previous revision; use current_id {current_id} for further work.",
+        })
+
+    # VERIFY: field names in COA response — name, version, previous_versions, active, draft_mode, passed_validation
+    name = coa_data.get("name", "")
+    version = coa_data.get("version")
+    previous_versions = coa_data.get("previous_versions") or []
+    active = coa_data.get("active", False)
+    draft_mode = coa_data.get("draft_mode", False)
+    passed_validation = coa_data.get("passed_validation", False)
+    lookup_source = "/coa/playbooks/" + str(pid) if not err else "rest_fallback"
+
+    summary = (
+        f"Input {pid} is already the current draft."
+        if is_current
+        else f"Input {pid} resolves to current draft {current_id}."
+    )
+
+    result = {
+        "ok": len(errors) == 0,
+        "summary": summary,
+        "data": {
+            "input_id": pid,
+            "current_id": current_id,
+            "is_current": is_current,
+            "name": name,
+            "version": version,
+            "previous_versions": previous_versions,
+            "active": active,
+            "draft_mode": draft_mode,
+            "passed_validation": passed_validation,
+            "lookup_source": lookup_source,
+        },
+        "findings": findings,
+        "errors": errors,
+    }
+    return json.dumps(result, indent=2)
+
+
+# ── #18 get_playbook_identity_map ──────────────────────────────────────────────
+
+def tool_get_playbook_identity_map(
+    client: SoarApiClient, config: McpServerConfig, args: dict
+) -> str:
+    pb_name = (args.get("playbook") or "").strip()
+    pb_id_raw = args.get("playbook_id")
+
+    if not pb_name and pb_id_raw is None:
+        return json.dumps({
+            "ok": False,
+            "summary": "Error: provide either playbook (name) or playbook_id.",
+            "data": {}, "findings": [], "errors": [],
+        }, indent=2)
+
+    current_id: Optional[int] = None
+    name_to_search = pb_name
+    errors = []
+
+    if pb_id_raw is not None:
+        pid, err_msg = _require_positive_int(pb_id_raw, "playbook_id")
+        if err_msg:
+            return err_msg
+        current_id, coa_data, err = _resolve_current_id(client, pid)
+        if err:
+            errors.append({"source": "coa", "message": err})
+        if not name_to_search:
+            # VERIFY: name field in COA or REST response
+            name_to_search = coa_data.get("name", "")
+            if not name_to_search:
+                rest_data, _ = client.get(f"playbook/{pid}")
+                if isinstance(rest_data, dict):
+                    name_to_search = rest_data.get("name", "")
+
+    # Query REST for all versions with this name
+    params: dict = {"page_size": 0}
+    if name_to_search:
+        # VERIFY: exact-match filter name on /rest/playbook
+        params["_filter_name__exact"] = f'"{name_to_search}"'
+
+    data, err = client.get("playbook", params=params)
+    if err:
+        errors.append({"source": "rest", "message": err})
+        return json.dumps({
+            "ok": False, "summary": f"Error listing playbook versions: {err}",
+            "data": {}, "findings": [], "errors": errors,
+        }, indent=2)
+
+    rows = data.get("data", []) if isinstance(data, dict) else []
+
+    # If we only have an ID and no name, filter rows by matching ID or current_id
+    if not name_to_search and current_id:
+        rows = [r for r in rows if r.get("id") == current_id]
+
+    versions = []
+    found_current_id = current_id
+    for r in rows:
+        row_id = r.get("id")
+        # VERIFY: version field name in /rest/playbook response
+        ver_num = r.get("version") or r.get("version_number")
+        row_current = r.get("current_id") or r.get("id")
+        if found_current_id is None and row_current:
+            found_current_id = int(row_current)
+        versions.append({
+            "id": row_id,
+            "version": ver_num,
+            "is_current": (row_id == found_current_id),
+            "active": r.get("active", False),
+            "draft_mode": r.get("draft_mode", False),
+            "passed_validation": r.get("passed_validation", False),
+        })
+
+    # Sort by version then id
+    versions.sort(key=lambda v: (v.get("version") or 0, v.get("id") or 0))
+
+    n = len(versions)
+    summary = f"Found {n} version(s)" + (
+        f"; current draft is {found_current_id}." if found_current_id else "."
+    )
+
+    result = {
+        "ok": len(errors) == 0,
+        "summary": summary,
+        "data": {
+            "name": name_to_search,
+            "current_id": found_current_id,
+            "versions": versions,
+        },
+        "findings": [],
+        "errors": errors,
+    }
+    return json.dumps(result, indent=2)
+
+
+# ── #19 get_playbook_coa_summary ───────────────────────────────────────────────
+
+def tool_get_playbook_coa_summary(
+    client: SoarApiClient, config: McpServerConfig, args: dict
+) -> str:
+    pid, err_msg = _require_positive_int(args.get("playbook_id"), "playbook_id")
+    if err_msg:
+        return err_msg
+
+    current_id, coa_data, err = _resolve_current_id(client, pid)
+    errors = []
+    if err:
+        errors.append({"source": "coa", "message": err})
+
+    # Fetch REST metadata for stable fields
+    rest_data: dict = {}
+    rest_val, rest_err = client.get(f"playbook/{current_id}")
+    if isinstance(rest_val, dict):
+        rest_data = rest_val
+    elif rest_err:
+        errors.append({"source": "rest", "message": rest_err})
+
+    nodes, edges = _get_coa_nodes_edges(coa_data)
+
+    # VERIFY: customName field path inside node — may be node["advanced"]["customName"]
+    custom_name_count = sum(
+        1 for n in nodes
+        if (n.get("advanced") or {}).get("customName") or n.get("customName")
+    )
+    # VERIFY: warnings / errors field inside node — may be list or count
+    warning_count = sum(
+        1 for n in nodes
+        if isinstance(n.get("warnings"), list) and len(n["warnings"]) > 0
+        or n.get("warning_count", 0) > 0
+    )
+    error_count = sum(
+        1 for n in nodes
+        if isinstance(n.get("errors"), list) and len(n["errors"]) > 0
+        or n.get("error_count", 0) > 0
+    )
+    # VERIFY: inputSpec / outputSpec field names in COA top-level
+    input_spec = coa_data.get("inputSpec") or coa_data.get("input_spec") or {}
+    output_spec = coa_data.get("outputSpec") or coa_data.get("output_spec") or {}
+
+    # Utility blocks: code/filter/decision nodes with functionId
+    utility_blocks = [
+        {
+            "function_id": n.get("functionId") or n.get("function_id"),  # VERIFY
+            "function_name": n.get("functionName") or n.get("function_name") or n.get("name"),  # VERIFY
+            "type": n.get("type"),
+        }
+        for n in nodes
+        if n.get("type") in ("code", "filter", "decision", "format", "prompt")
+    ]
+
+    # From REST metadata
+    name = rest_data.get("name") or coa_data.get("name", "")
+    version = rest_data.get("version") or coa_data.get("version")
+    active = rest_data.get("active", coa_data.get("active", False))
+    draft_mode = rest_data.get("draft_mode", coa_data.get("draft_mode", False))
+    passed_validation = rest_data.get("passed_validation", coa_data.get("passed_validation", False))
+    # VERIFY: playbook_type / trigger field names
+    playbook_type = rest_data.get("playbook_type") or coa_data.get("playbook_type", "")
+    trigger = rest_data.get("trigger") or coa_data.get("trigger", "")
+
+    findings = []
+    if warning_count:
+        findings.append({"severity": "warn", "code": "node_warnings",
+                         "message": f"{warning_count} node(s) have stored warnings."})
+    if error_count:
+        findings.append({"severity": "high", "code": "node_errors",
+                         "message": f"{error_count} node(s) have stored errors."})
+    if not passed_validation:
+        findings.append({"severity": "warn", "code": "validation_failed",
+                         "message": "passed_validation is false on REST record."})
+
+    result = {
+        "ok": len(errors) == 0,
+        "summary": (
+            f"Playbook '{name}' (id={current_id}): "
+            f"{len(nodes)} nodes, {len(edges)} edges, "
+            f"{warning_count} warnings, {error_count} errors."
+        ),
+        "data": {
+            "input_id": pid,
+            "current_id": current_id,
+            "is_current": (current_id == pid),
+            "name": name,
+            "version": version,
+            "playbook_type": playbook_type,
+            "trigger": trigger,
+            "active": active,
+            "draft_mode": draft_mode,
+            "passed_validation": passed_validation,
+            "node_count": len(nodes),
+            "edge_count": len(edges),
+            "custom_name_count": custom_name_count,
+            "warning_count": warning_count,
+            "error_count": error_count,
+            "input_spec": input_spec,
+            "output_spec": output_spec,
+            "utility_blocks": utility_blocks,
+            "lookup_source": "/coa/playbooks/" + str(current_id) if not err else "rest_only",
+        },
+        "findings": findings,
+        "errors": errors,
+    }
+    return json.dumps(result, indent=2)
+
+
+# ── #20 list_playbook_nodes / list_playbook_edges ─────────────────────────────
+
+def tool_list_playbook_nodes(
+    client: SoarApiClient, config: McpServerConfig, args: dict
+) -> str:
+    pid, err_msg = _require_positive_int(args.get("playbook_id"), "playbook_id")
+    if err_msg:
+        return err_msg
+
+    include_params = bool(args.get("include_parameters", False))
+    type_filter = (args.get("type_filter") or "").lower().strip()
+    name_contains = (args.get("function_name_contains") or "").lower().strip()
+
+    current_id, coa_data, err = _resolve_current_id(client, pid)
+    errors = []
+    if err:
+        errors.append({"source": "coa", "message": err})
+
+    nodes, _ = _get_coa_nodes_edges(coa_data)
+
+    node_records = []
+    for n in nodes:
+        # VERIFY: field names for each attribute
+        n_id = n.get("id") or n.get("node_id")
+        fn_name = n.get("functionName") or n.get("function_name") or n.get("name") or ""
+        n_type = (n.get("type") or "").lower()
+        app = n.get("app") or n.get("app_name")
+        action = n.get("action") or n.get("action_name")
+        asset = n.get("asset") or n.get("asset_name")
+        x = n.get("left") or n.get("x") or 0   # VERIFY: position key name
+        y = n.get("top") or n.get("y") or 0     # VERIFY: position key name
+        fn_id = n.get("functionId") or n.get("function_id")
+        warnings = n.get("warnings") or []
+        n_errors = n.get("errors") or []
+
+        if type_filter and type_filter not in n_type:
+            continue
+        if name_contains and name_contains not in fn_name.lower():
+            continue
+
+        rec: dict = {
+            "id": n_id,
+            "function_name": fn_name,
+            "type": n_type,
+            "app": app,
+            "action": action,
+            "asset": asset,
+            "x": x,
+            "y": y,
+            "function_id": fn_id,
+            "warning_count": len(warnings) if isinstance(warnings, list) else 0,
+            "error_count": len(n_errors) if isinstance(n_errors, list) else 0,
+        }
+        if include_params:
+            raw_params = n.get("parameters") or n.get("params") or {}
+            rec["parameters"] = redact_nested(raw_params)
+        node_records.append(rec)
+
+    # Sort by y, x, id
+    node_records.sort(key=lambda r: (r.get("y") or 0, r.get("x") or 0, r.get("id") or 0))
+
+    result = {
+        "ok": True,
+        "summary": f"{len(node_records)} node(s) in playbook {current_id}.",
+        "data": {
+            "input_id": pid,
+            "current_id": current_id,
+            "is_current": (current_id == pid),
+            "total_nodes_in_coa": len(nodes),
+            "filtered_nodes": len(node_records),
+            "nodes": node_records,
+        },
+        "findings": [],
+        "errors": errors,
+    }
+    return json.dumps(result, indent=2)
+
+
+def tool_list_playbook_edges(
+    client: SoarApiClient, config: McpServerConfig, args: dict
+) -> str:
+    pid, err_msg = _require_positive_int(args.get("playbook_id"), "playbook_id")
+    if err_msg:
+        return err_msg
+
+    edge_from = (args.get("edge_from") or "").lower().strip()
+    edge_to = (args.get("edge_to") or "").lower().strip()
+
+    current_id, coa_data, err = _resolve_current_id(client, pid)
+    errors = []
+    if err:
+        errors.append({"source": "coa", "message": err})
+
+    _, edges = _get_coa_nodes_edges(coa_data)
+
+    edge_records = []
+    for e in edges:
+        # VERIFY: field names — source/target may be node IDs or function names
+        e_id = e.get("id") or e.get("edge_id")
+        src_id = e.get("source") or e.get("source_id") or e.get("from")
+        tgt_id = e.get("target") or e.get("target_id") or e.get("to")
+        src_fn = e.get("source_function") or e.get("sourceFunctionName") or str(src_id)
+        tgt_fn = e.get("target_function") or e.get("targetFunctionName") or str(tgt_id)
+        condition = e.get("condition") or e.get("label") or e.get("branch") or ""
+        edge_type = e.get("type") or e.get("edge_type") or "normal"  # VERIFY
+
+        if edge_from and edge_from not in (src_fn or "").lower():
+            continue
+        if edge_to and edge_to not in (tgt_fn or "").lower():
+            continue
+
+        edge_records.append({
+            "id": e_id,
+            "source_id": src_id,
+            "source_function": src_fn,
+            "target_id": tgt_id,
+            "target_function": tgt_fn,
+            "condition": condition,
+            "edge_type": edge_type,
+        })
+
+    edge_records.sort(key=lambda r: (
+        str(r.get("source_function") or ""),
+        str(r.get("target_function") or ""),
+        r.get("id") or 0,
+    ))
+
+    result = {
+        "ok": True,
+        "summary": f"{len(edge_records)} edge(s) in playbook {current_id}.",
+        "data": {
+            "input_id": pid,
+            "current_id": current_id,
+            "is_current": (current_id == pid),
+            "total_edges_in_coa": len(edges),
+            "filtered_edges": len(edge_records),
+            "edges": edge_records,
+        },
+        "findings": [],
+        "errors": errors,
+    }
+    return json.dumps(result, indent=2)
+
+
+# ── #22 check_saved_generated_python_drift ────────────────────────────────────
+
+def tool_check_saved_generated_python_drift(
+    client: SoarApiClient, config: McpServerConfig, args: dict
+) -> str:
+    import ast as _ast
+
+    pid, err_msg = _require_positive_int(args.get("playbook_id"), "playbook_id")
+    if err_msg:
+        return err_msg
+
+    current_id, coa_data, err = _resolve_current_id(client, pid)
+    errors = []
+    if err:
+        errors.append({"source": "coa", "message": err})
+
+    nodes, _ = _get_coa_nodes_edges(coa_data)
+
+    # Collect COA userCode blocks from code-type nodes
+    # VERIFY: field name "userCode" inside a code node — may be "user_code" or "code"
+    coa_functions: set[str] = set()
+    for n in nodes:
+        if (n.get("type") or "").lower() == "code":
+            user_code = n.get("userCode") or n.get("user_code") or n.get("code") or ""
+            if user_code:
+                try:
+                    tree = _ast.parse(user_code)
+                    for node_obj in _ast.walk(tree):
+                        if isinstance(node_obj, _ast.FunctionDef):
+                            coa_functions.add(node_obj.name)
+                except SyntaxError:
+                    pass
+
+    # Fetch saved Python payload from REST
+    # VERIFY: field name for saved Python in /rest/playbook/{id} — may be "code", "script", or "playbook_run_data"
+    rest_data, rest_err = client.get(f"playbook/{current_id}")
+    saved_python: Optional[str] = None
+    python_payload_available = False
+    if isinstance(rest_data, dict):
+        saved_python = (
+            rest_data.get("code")
+            or rest_data.get("script")
+            or rest_data.get("playbook_run_data")
+        )
+        if saved_python:
+            python_payload_available = True
+
+    if not python_payload_available:
+        result = {
+            "ok": True,
+            "summary": "Python payload not available in REST response — check skipped.",
+            "data": {
+                "current_id": current_id,
+                "drift_detected": False,
+                "method": "static_usercode_analysis",
+                "python_payload_available": False,
+                "ast_parse_succeeded": False,
+                "coa_defined_functions": sorted(coa_functions),
+                "saved_python_functions": [],
+                "external_helper_candidates": [],
+                "status": "skipped",
+                "skip_reason": "saved Python payload not found in /rest/playbook response — VERIFY field name",  # noqa
+            },
+            "findings": [],
+            "errors": errors,
+        }
+        return json.dumps(result, indent=2)
+
+    # Parse saved Python
+    saved_functions: set[str] = set()
+    ast_ok = False
+    try:
+        tree = _ast.parse(saved_python)
+        for node_obj in _ast.walk(tree):
+            if isinstance(node_obj, _ast.FunctionDef):
+                saved_functions.add(node_obj.name)
+        ast_ok = True
+    except SyntaxError as se:
+        errors.append({"source": "ast_parse", "message": f"SyntaxError: {se}"})
+        result = {
+            "ok": False,
+            "summary": "AST parse failed — drift check skipped.",
+            "data": {
+                "current_id": current_id,
+                "drift_detected": False,
+                "method": "fallback_unavailable",
+                "python_payload_available": True,
+                "ast_parse_succeeded": False,
+                "coa_defined_functions": sorted(coa_functions),
+                "saved_python_functions": [],
+                "external_helper_candidates": [],
+                "status": "skipped",
+                "skip_reason": str(se),
+            },
+            "findings": [],
+            "errors": errors,
+        }
+        return json.dumps(result, indent=2)
+
+    external_helpers = sorted(saved_functions - coa_functions)
+    drift_detected = bool(external_helpers)
+
+    findings = []
+    for fn_name in external_helpers:
+        findings.append({
+            "severity": "warn",
+            "code": "saved_generated_python_drift",
+            "message": (
+                f"Function '{fn_name}' exists in saved Python but is not defined in any COA "
+                f"userCode block. It will be dropped when the Visual Editor next saves."
+            ),
+        })
+
+    result = {
+        "ok": not drift_detected,
+        "summary": (
+            f"Drift detected: {len(external_helpers)} external helper(s) at risk."
+            if drift_detected else "No drift detected — all saved functions appear in COA userCode."
+        ),
+        "data": {
+            "current_id": current_id,
+            "drift_detected": drift_detected,
+            "method": "static_usercode_analysis",
+            "python_payload_available": True,
+            "ast_parse_succeeded": ast_ok,
+            "coa_defined_functions": sorted(coa_functions),
+            "saved_python_functions": sorted(saved_functions),
+            "external_helper_candidates": external_helpers,
+            "status": "completed",
+        },
+        "findings": findings,
+        "errors": errors,
+    }
+    return json.dumps(result, indent=2)
+
+
+# ── #23 check_datapath_selectability (Phase A — schema-only) ──────────────────
+
+def _fetch_action_schema_raw(
+    client: SoarApiClient, app_id: int, action_name: str
+) -> tuple[list[dict], str | None]:
+    """
+    Fetch all action records for app_id and return those matching action_name.
+    Reuses the /rest/app_action endpoint logic from tool_get_action_schema.
+    """
+    data, err = client.get("app_action", params={
+        "_filter_app": app_id,
+        "page_size": 0,
+    })
+    if err:
+        return [], err
+    actions = data.get("data", []) if isinstance(data, dict) else []
+    if not isinstance(actions, list):
+        return [], "Unexpected response shape from /rest/app_action"
+    af = action_name.lower()
+    matched = [
+        a for a in actions
+        if af in (a.get("action") or "").lower()
+        or af in (a.get("identifier") or "").lower()
+        or af in (a.get("name") or "").lower()
+    ]
+    return matched, None
+
+
+def _extract_contains(outputs_or_params: list[dict], field_name: str = "") -> list[str]:
+    """Collect unique 'contains' tag values from a list of output or parameter dicts."""
+    tags: set[str] = set()
+    for item in outputs_or_params:
+        if not isinstance(item, dict):
+            continue
+        if field_name and (item.get("data_path") or item.get("name") or "").lower() != field_name.lower():
+            continue
+        for tag in (item.get("contains") or []):
+            if tag:
+                tags.add(str(tag))
+    return sorted(tags)
+
+
+def tool_check_datapath_selectability(
+    client: SoarApiClient, config: McpServerConfig, args: dict
+) -> str:
+    prod_app_id, err = _require_positive_int(args.get("producer_app_id"), "producer_app_id")
+    if err:
+        return err
+    cons_app_id, err = _require_positive_int(args.get("consumer_app_id"), "consumer_app_id")
+    if err:
+        return err
+    prod_action = (args.get("producer_action") or "").strip()
+    cons_action = (args.get("consumer_action") or "").strip()
+    cons_param = (args.get("consumer_parameter") or "").strip()
+    datapath = (args.get("datapath") or "").strip()
+
+    if not prod_action or not cons_action or not cons_param:
+        return json.dumps({
+            "ok": False, "summary": "Error: producer_action, consumer_action, consumer_parameter are required.",
+            "data": {}, "findings": [], "errors": [],
+        }, indent=2)
+
+    # Fetch producer schema
+    prod_actions, err = _fetch_action_schema_raw(client, prod_app_id, prod_action)
+    if err:
+        return json.dumps({
+            "ok": False, "summary": f"Error fetching producer schema: {err}",
+            "data": {}, "findings": [], "errors": [{"source": "rest", "message": err}],
+        }, indent=2)
+    if not prod_actions:
+        return json.dumps({
+            "ok": False, "summary": f"Producer action '{prod_action}' not found for app {prod_app_id}.",
+            "data": {}, "findings": [], "errors": [],
+        }, indent=2)
+
+    # Fetch consumer schema
+    cons_actions, err = _fetch_action_schema_raw(client, cons_app_id, cons_action)
+    if err:
+        return json.dumps({
+            "ok": False, "summary": f"Error fetching consumer schema: {err}",
+            "data": {}, "findings": [], "errors": [{"source": "rest", "message": err}],
+        }, indent=2)
+    if not cons_actions:
+        return json.dumps({
+            "ok": False, "summary": f"Consumer action '{cons_action}' not found for app {cons_app_id}.",
+            "data": {}, "findings": [], "errors": [],
+        }, indent=2)
+
+    # Extract contains tags
+    prod_outputs = prod_actions[0].get("output") or []
+    # Filter by datapath suffix if provided
+    dp_part = datapath.split(".")[-1] if datapath else ""
+    if dp_part and isinstance(prod_outputs, list):
+        filtered = [o for o in prod_outputs if dp_part in (o.get("data_path") or "")]
+        prod_contains = _extract_contains(filtered) if filtered else _extract_contains(prod_outputs)
+    else:
+        prod_contains = _extract_contains(prod_outputs)
+
+    cons_params_raw = cons_actions[0].get("parameters") or {}
+    cons_param_list: list[dict] = []
+    if isinstance(cons_params_raw, dict):
+        p_info = cons_params_raw.get(cons_param) or {}
+        if isinstance(p_info, dict):
+            cons_param_list = [{"name": cons_param, "contains": p_info.get("contains") or []}]
+    elif isinstance(cons_params_raw, list):
+        cons_param_list = [p for p in cons_params_raw if (p.get("name") or "").lower() == cons_param.lower()]
+    cons_contains = _extract_contains(cons_param_list)
+
+    # Determine selectability
+    if not prod_contains or not cons_contains:
+        selectable: object = "unknown"
+        reason = (
+            "One or both sides have no contains tags. "
+            "Community apps often omit contains — selectability cannot be determined statically."
+        )
+        findings = [{"severity": "low", "code": "unknown_selectability",
+                     "message": reason}]
+    elif set(prod_contains) & set(cons_contains):
+        selectable = True
+        reason = f"Matching contains tags: {sorted(set(prod_contains) & set(cons_contains))}"
+        findings = []
+    else:
+        selectable = False
+        reason = f"No overlap between producer contains {prod_contains} and consumer contains {cons_contains}."
+        findings = [{"severity": "warn", "code": "contains_mismatch", "message": reason}]
+
+    result = {
+        "ok": selectable is not False,
+        "summary": f"Selectability: {selectable}. {reason[:120]}",
+        "data": {
+            "producer_app_id": prod_app_id,
+            "producer_action": prod_action,
+            "consumer_app_id": cons_app_id,
+            "consumer_action": cons_action,
+            "consumer_parameter": cons_param,
+            "datapath": datapath or None,
+            "selectable": selectable,
+            "reason": reason,
+            "producer_contains": prod_contains,
+            "consumer_contains": cons_contains,
+            "method": "schema_contains_match",
+            "limitation": (
+                "Phase A: schema-only. Edge provenance check (COA graph) not included — "
+                "a matching contains tag does not guarantee a provenance edge exists."
+            ),
+        },
+        "findings": findings,
+        "errors": [],
+    }
+    return json.dumps(result, indent=2)
+
+
+# ── #24 diff_playbook_versions + verify_layout_only_change ────────────────────
+
+def _diff_coa_graphs(
+    client: SoarApiClient, old_id: int, new_id: int
+) -> tuple[dict, str | None]:
+    """
+    Fetch COA for both IDs, normalize volatiles, deep-diff.
+    Returns (diff_result_dict, error_or_None).
+    """
+    old_cid, old_coa, err1 = _resolve_current_id(client, old_id)
+    new_cid, new_coa, err2 = _resolve_current_id(client, new_id)
+    errors = []
+    if err1:
+        errors.append(f"old_id: {err1}")
+    if err2:
+        errors.append(f"new_id: {err2}")
+    if errors and (not old_coa or not new_coa):
+        return {}, "; ".join(errors)
+
+    old_norm = _normalize_coa_volatile(old_coa)
+    new_norm = _normalize_coa_volatile(new_coa)
+
+    raw_diffs = _deep_diff(old_norm, new_norm)
+    change_categories: set[str] = set()
+    changed_paths = []
+    for d in raw_diffs:
+        cat = _categorize_diff_path(d.get("path", ""))
+        change_categories.add(cat)
+        changed_paths.append({**d, "category": cat})
+
+    is_layout_only = (change_categories == {"layout"}) or (len(change_categories) == 0)
+
+    return {
+        "old_id": old_id,
+        "new_id": new_id,
+        "old_current_id": old_cid,
+        "new_current_id": new_cid,
+        "change_categories": sorted(change_categories),
+        "is_layout_only": is_layout_only,
+        "changed_paths": changed_paths[:100],  # cap for MCP context size
+        "total_diff_count": len(raw_diffs),
+    }, None
+
+
+def tool_diff_playbook_versions(
+    client: SoarApiClient, config: McpServerConfig, args: dict
+) -> str:
+    old_id, err = _require_positive_int(args.get("old_id"), "old_id")
+    if err:
+        return err
+    new_id, err = _require_positive_int(args.get("new_id"), "new_id")
+    if err:
+        return err
+
+    diff_data, err = _diff_coa_graphs(client, old_id, new_id)
+    if err:
+        return json.dumps({
+            "ok": False, "summary": f"Diff failed: {err}",
+            "data": {}, "findings": [], "errors": [{"source": "coa", "message": err}],
+        }, indent=2)
+
+    cats = diff_data.get("change_categories", [])
+    n_diffs = diff_data.get("total_diff_count", 0)
+    result = {
+        "ok": True,
+        "summary": (
+            f"{n_diffs} difference(s) in categories: {cats}. "
+            + ("Layout-only change." if diff_data.get("is_layout_only") else "Behavioral changes detected.")
+        ),
+        "data": diff_data,
+        "findings": (
+            [] if diff_data.get("is_layout_only")
+            else [{"severity": "warn", "code": "behavioral_change",
+                   "message": f"Non-layout changes detected in categories: {cats}"}]
+        ),
+        "errors": [],
+    }
+    return json.dumps(result, indent=2)
+
+
+def tool_verify_layout_only_change(
+    client: SoarApiClient, config: McpServerConfig, args: dict
+) -> str:
+    before_id, err = _require_positive_int(args.get("before_id"), "before_id")
+    if err:
+        return err
+    after_id, err = _require_positive_int(args.get("after_id"), "after_id")
+    if err:
+        return err
+
+    diff_data, err = _diff_coa_graphs(client, before_id, after_id)
+    if err:
+        return json.dumps({
+            "ok": False,
+            "summary": f"Verification failed due to diff error: {err}",
+            "data": {"layout_only": False, "error": "normalization_error"},
+            "findings": [{"severity": "high", "code": "normalization_error", "message": err}],
+            "errors": [{"source": "diff", "message": err}],
+        }, indent=2)
+
+    is_layout_only = diff_data.get("is_layout_only", False)
+    result = {
+        "ok": is_layout_only,
+        "summary": (
+            "PASS: only layout (x/y) changes detected."
+            if is_layout_only else
+            f"FAIL: non-layout changes in categories: {diff_data.get('change_categories', [])}"
+        ),
+        "data": {
+            "layout_only": is_layout_only,
+            "change_categories": diff_data.get("change_categories", []),
+            "total_diff_count": diff_data.get("total_diff_count", 0),
+            "before_id": before_id,
+            "after_id": after_id,
+        },
+        "findings": (
+            [] if is_layout_only
+            else [{
+                "severity": "high",
+                "code": "behavioral_change",
+                "message": (
+                    f"Non-layout changes detected. save_playbook_layout_only must not proceed. "
+                    f"Categories: {diff_data.get('change_categories', [])}"
+                ),
+            }]
+        ),
+        "errors": [],
+    }
+    return json.dumps(result, indent=2)
+
+
+# ── #25 validate_playbook_bundle ──────────────────────────────────────────────
+
+def tool_validate_playbook_bundle(
+    client: SoarApiClient, config: McpServerConfig, args: dict
+) -> str:
+    import py_compile as _py_compile
+    import shutil as _shutil
+    import subprocess as _subprocess
+    import tempfile as _tempfile
+    import os as _os
+
+    pid, err_msg = _require_positive_int(args.get("playbook_id"), "playbook_id")
+    if err_msg:
+        return err_msg
+
+    current_id, coa_data, coa_err = _resolve_current_id(client, pid)
+    errors = []
+    if coa_err:
+        errors.append({"source": "coa", "message": coa_err})
+
+    checks: list[dict] = []
+
+    # Check 1 — SOAR structure validation endpoint
+    # VERIFY: does /rest/playbook/{id}/validate exist on SOAR 8.5?
+    val_data, val_err = client.get(f"playbook/{current_id}/validate")
+    if val_err and "404" in str(val_err):
+        checks.append({
+            "name": "validate_structure",
+            "status": "skipped",
+            "message": "SOAR /rest/playbook/{id}/validate endpoint not found on this version.",
+            "details": {},
+        })
+    elif val_err:
+        checks.append({
+            "name": "validate_structure",
+            "status": "skipped",
+            "message": f"Validation endpoint error: {val_err}",
+            "details": {},
+        })
+    else:
+        # VERIFY: success signal in validation endpoint response
+        val_passed = (
+            val_data.get("success", True)
+            if isinstance(val_data, dict) else True
+        )
+        checks.append({
+            "name": "validate_structure",
+            "status": "passed" if val_passed else "failed",
+            "message": (val_data.get("message", "") if isinstance(val_data, dict) else ""),
+            "details": val_data if isinstance(val_data, dict) else {},
+        })
+
+    # Check 2 — REST passed_validation flag
+    rest_data, rest_err = client.get(f"playbook/{current_id}")
+    if rest_err or not isinstance(rest_data, dict):
+        checks.append({
+            "name": "passed_validation",
+            "status": "skipped",
+            "message": f"Could not fetch REST playbook record: {rest_err}",
+            "details": {},
+        })
+    else:
+        pv = rest_data.get("passed_validation")
+        checks.append({
+            "name": "passed_validation",
+            "status": "passed" if pv else ("failed" if pv is False else "skipped"),
+            "message": f"passed_validation={pv}",
+            "details": {},
+        })
+
+    # Check 3 — COA node warnings
+    nodes, _ = _get_coa_nodes_edges(coa_data)
+    w_count = sum(
+        1 for n in nodes
+        if isinstance(n.get("warnings"), list) and len(n["warnings"]) > 0
+    )
+    checks.append({
+        "name": "node_warnings",
+        "status": "passed" if w_count == 0 else "failed",
+        "message": f"{w_count} node(s) have stored COA warnings.",
+        "details": {"warning_count": w_count},
+    })
+
+    # Check 4 — Python py_compile (AST-only, no execution)
+    saved_python = None
+    if isinstance(rest_data, dict):
+        saved_python = (
+            rest_data.get("code")
+            or rest_data.get("script")
+            or rest_data.get("playbook_run_data")
+        )
+
+    if not saved_python:
+        checks.append({
+            "name": "python_compile",
+            "status": "skipped",
+            "message": "Saved Python payload not found in REST record — VERIFY field name.",
+            "details": {},
+        })
+    else:
+        tmp_path = None
+        try:
+            with _tempfile.NamedTemporaryFile(
+                mode="w", suffix=".py", delete=False, encoding="utf-8"
+            ) as tf:
+                tf.write(saved_python)
+                tmp_path = tf.name
+            _py_compile.compile(tmp_path, doraise=True)
+            checks.append({
+                "name": "python_compile",
+                "status": "passed",
+                "message": "Python AST parse succeeded.",
+                "details": {},
+            })
+        except _py_compile.PyCompileError as pce:
+            checks.append({
+                "name": "python_compile",
+                "status": "failed",
+                "message": f"Python compile error: {pce}",
+                "details": {},
+            })
+        except Exception as exc:
+            checks.append({
+                "name": "python_compile",
+                "status": "skipped",
+                "message": f"Unexpected error during compile check: {type(exc).__name__}",
+                "details": {},
+            })
+        finally:
+            if tmp_path and _os.path.exists(tmp_path):
+                _os.unlink(tmp_path)
+
+    # Check 5 — lint (pyflakes preferred, pylint fallback; skip if absent)
+    lint_binary = _shutil.which("pyflakes") or _shutil.which("pylint")
+    if not lint_binary or not saved_python:
+        checks.append({
+            "name": "lint",
+            "status": "skipped",
+            "message": (
+                "pyflakes/pylint not found in PATH." if not lint_binary
+                else "Saved Python payload not available."
+            ),
+            "details": {},
+        })
+    else:
+        tmp_path2 = None
+        try:
+            with _tempfile.NamedTemporaryFile(
+                mode="w", suffix=".py", delete=False, encoding="utf-8"
+            ) as tf2:
+                tf2.write(saved_python)
+                tmp_path2 = tf2.name
+            if "pyflakes" in lint_binary:
+                cmd = [lint_binary, tmp_path2]
+            else:
+                cmd = [lint_binary, "--disable=all", "--enable=undefined-variable", tmp_path2]
+            proc = _subprocess.run(
+                cmd, capture_output=True, text=True, timeout=30
+            )
+            lint_output = (proc.stdout + proc.stderr).strip()
+            checks.append({
+                "name": "lint",
+                "status": "passed" if proc.returncode == 0 else "failed",
+                "message": lint_output[:500] if lint_output else "No issues found.",
+                "details": {"returncode": proc.returncode},
+            })
+        except _subprocess.TimeoutExpired:
+            checks.append({"name": "lint", "status": "skipped",
+                           "message": "Lint timed out after 30s.", "details": {}})
+        except Exception as exc:
+            checks.append({"name": "lint", "status": "skipped",
+                           "message": f"Lint error: {type(exc).__name__}", "details": {}})
+        finally:
+            if tmp_path2 and _os.path.exists(tmp_path2):
+                _os.unlink(tmp_path2)
+
+    # Aggregate
+    failed = [c for c in checks if c["status"] == "failed"]
+    passed = [c for c in checks if c["status"] == "passed"]
+    skipped = [c for c in checks if c["status"] == "skipped"]
+    overall_ok = len(failed) == 0
+
+    result = {
+        "ok": overall_ok,
+        "summary": f"{len(passed)}/{len(checks)} passed, {len(failed)} failed, {len(skipped)} skipped.",
+        "data": {
+            "current_id": current_id,
+            "checks": checks,
+        },
+        "findings": [
+            {"severity": "high", "code": "validation_failed",
+             "message": f"Check '{c['name']}' failed: {c['message']}"}
+            for c in failed
+        ],
+        "errors": errors,
+    }
+    return json.dumps(result, indent=2)
+
+
+# ── #21 check_visual_editor_compat (aggregator) ───────────────────────────────
+
+def tool_check_visual_editor_compat(
+    client: SoarApiClient, config: McpServerConfig, args: dict
+) -> str:
+    pid, err_msg = _require_positive_int(args.get("playbook_id"), "playbook_id")
+    if err_msg:
+        return err_msg
+    strict = bool(args.get("strict", False))
+
+    all_findings: list[dict] = []
+    errors: list[dict] = []
+
+    # Step 1 — resolve current ID (abort if COA unreachable)
+    current_id, coa_data, coa_err = _resolve_current_id(client, pid)
+    if coa_err:
+        errors.append({"source": "resolve", "message": coa_err})
+    if current_id != pid:
+        all_findings.append({
+            "severity": "warn", "code": "stale_id", "source": "resolve",
+            "message": f"Input ID {pid} is a previous revision; current draft is {current_id}.",
+        })
+
+    # Step 2 — COA summary (node/edge counts, custom names, warnings, errors)
+    nodes, edges = _get_coa_nodes_edges(coa_data)
+    custom_name_count = sum(
+        1 for n in nodes
+        if (n.get("advanced") or {}).get("customName") or n.get("customName")
+    )
+    w_count = sum(
+        1 for n in nodes
+        if isinstance(n.get("warnings"), list) and len(n["warnings"]) > 0
+    )
+    e_count = sum(
+        1 for n in nodes
+        if isinstance(n.get("errors"), list) and len(n["errors"]) > 0
+    )
+    if custom_name_count:
+        all_findings.append({
+            "severity": "low", "code": "custom_name_count", "source": "coa_summary",
+            "message": f"{custom_name_count} node(s) have custom display names — verify functionName consistency.",
+        })
+    if w_count:
+        all_findings.append({
+            "severity": "warn", "code": "node_warnings", "source": "coa_summary",
+            "message": f"{w_count} node(s) have stored COA warnings.",
+        })
+    if e_count:
+        all_findings.append({
+            "severity": "high", "code": "node_errors", "source": "coa_summary",
+            "message": f"{e_count} node(s) have stored COA errors.",
+        })
+
+    # Step 3 — Python drift check (inline; suppress response parsing overhead)
+    drift_args = {"playbook_id": pid}
+    drift_raw = tool_check_saved_generated_python_drift(client, config, drift_args)
+    try:
+        drift_result = json.loads(drift_raw)
+        for f in drift_result.get("findings", []):
+            all_findings.append({**f, "source": "drift"})
+        for e in drift_result.get("errors", []):
+            errors.append(e)
+    except Exception:
+        pass
+
+    # Step 4 — Validation bundle
+    val_args = {"playbook_id": pid}
+    val_raw = tool_validate_playbook_bundle(client, config, val_args)
+    try:
+        val_result = json.loads(val_raw)
+        for f in val_result.get("findings", []):
+            all_findings.append({**f, "source": "validation"})
+        for e in val_result.get("errors", []):
+            errors.append(e)
+        # Promote skipped checks to low-severity findings
+        for chk in (val_result.get("data") or {}).get("checks", []):
+            if chk.get("status") == "skipped":
+                all_findings.append({
+                    "severity": "low", "code": "validation_skipped", "source": "validation",
+                    "message": f"Check '{chk['name']}' skipped: {chk['message']}",
+                })
+    except Exception:
+        pass
+
+    # Determine overall status
+    sev_rank = {"high": 3, "warn": 2, "medium": 2, "low": 1}
+    max_sev = max((sev_rank.get(f.get("severity", "low"), 0) for f in all_findings), default=0)
+
+    if max_sev >= 3:
+        status = "fail"
+        ok = False
+    elif max_sev >= 2:
+        status = "warn"
+        ok = not strict
+    else:
+        status = "pass" if all_findings else "pass"
+        ok = True
+
+    result = {
+        "ok": ok,
+        "summary": (
+            f"VPE compat check: {status.upper()} — "
+            f"{len(all_findings)} finding(s), {len(errors)} error(s). "
+            f"Playbook id={current_id}, {len(nodes)} nodes, {len(edges)} edges."
+        ),
+        "data": {
+            "input_id": pid,
+            "current_id": current_id,
+            "status": status,
+            "node_count": len(nodes),
+            "edge_count": len(edges),
+            "strict": strict,
+        },
+        "findings": all_findings,
+        "errors": errors,
+    }
+    return json.dumps(result, indent=2)
+
+
+# ── #29 save_playbook_layout_only (WRITE, guarded) ────────────────────────────
+
+def tool_save_playbook_layout_only(
+    client: SoarApiClient, config: McpServerConfig, args: dict
+) -> str:
+    pid, err_msg = _require_positive_int(args.get("playbook_id"), "playbook_id")
+    if err_msg:
+        return err_msg
+
+    node_positions = args.get("node_positions") or {}
+    if not isinstance(node_positions, dict) or not node_positions:
+        return json.dumps({
+            "ok": False,
+            "summary": "Error: node_positions must be a non-empty dict of functionId -> {x, y}.",
+            "data": {}, "findings": [], "errors": [],
+        }, indent=2)
+
+    expected_hash = args.get("expected_hash")
+    # Default dry_run to True — the first invocation should always be a dry run
+    dry_run = bool(args.get("dry_run", True))
+
+    # Step 1 — resolve current ID; reject stale inputs
+    current_id, coa_data, coa_err = _resolve_current_id(client, pid)
+    if coa_err:
+        return json.dumps({
+            "ok": False,
+            "summary": f"Cannot resolve current draft: {coa_err}",
+            "data": {}, "findings": [],
+            "errors": [{"source": "resolve", "message": coa_err}],
+        }, indent=2)
+    if current_id != pid:
+        return json.dumps({
+            "ok": False,
+            "summary": (
+                f"Input ID {pid} is a stale revision. "
+                f"Resolve to current draft {current_id} first."
+            ),
+            "data": {"current_id": current_id, "input_id": pid},
+            "findings": [{"severity": "high", "code": "stale_id",
+                          "message": f"Use current_id={current_id} not {pid}."}],
+            "errors": [],
+        }, indent=2)
+
+    # Step 2 — hash check if provided
+    if expected_hash:
+        # VERIFY: does the COA response contain a hash field?
+        actual_hash = coa_data.get("hash") or coa_data.get("coa_hash")
+        if actual_hash and actual_hash != expected_hash:
+            return json.dumps({
+                "ok": False,
+                "summary": "Hash mismatch — COA state changed since expected_hash was captured.",
+                "data": {"expected": expected_hash, "actual": actual_hash},
+                "findings": [{"severity": "high", "code": "hash_mismatch",
+                              "message": "COA state changed since expected_hash was captured."}],
+                "errors": [],
+            }, indent=2)
+
+    # Step 3 — apply positions to in-memory copy and verify layout-only
+    import copy as _copy
+    modified_coa = _copy.deepcopy(coa_data)
+    nodes, _ = _get_coa_nodes_edges(modified_coa)
+    applied = []
+    not_found = []
+    for n in nodes:
+        fn_id = str(n.get("functionId") or n.get("function_id") or "")
+        if fn_id in node_positions:
+            pos = node_positions[fn_id]
+            # VERIFY: position field names — may be "left"/"top" or "x"/"y"
+            if "left" in n or "top" in n:
+                n["left"] = pos.get("x", n.get("left", 0))
+                n["top"] = pos.get("y", n.get("top", 0))
+            else:
+                n["x"] = pos.get("x", n.get("x", 0))
+                n["y"] = pos.get("y", n.get("y", 0))
+            applied.append(fn_id)
+    not_found = [fid for fid in node_positions if fid not in applied]
+
+    # Step 4 — verify that the proposed change is layout-only
+    diff_pairs = _deep_diff(
+        _normalize_coa_volatile(coa_data),
+        _normalize_coa_volatile(modified_coa),
+    )
+    non_layout = [
+        d for d in diff_pairs
+        if _categorize_diff_path(d.get("path", "")) != "layout"
+    ]
+
+    if non_layout:
+        return json.dumps({
+            "ok": False,
+            "summary": "Internal error: position update would change non-layout fields. Aborting.",
+            "data": {"non_layout_diffs": non_layout[:10]},
+            "findings": [{"severity": "high", "code": "behavioral_change",
+                          "message": "Position update leaked into non-layout fields."}],
+            "errors": [],
+        }, indent=2)
+
+    # Step 5 — dry_run: return preview without writing
+    if dry_run:
+        return json.dumps({
+            "ok": True,
+            "summary": (
+                f"DRY RUN — {len(applied)} node(s) would be repositioned, "
+                f"{len(not_found)} functionId(s) not found in COA. "
+                "Set dry_run=false to write after reviewing."
+            ),
+            "data": {
+                "playbook_id": current_id,
+                "dry_run": True,
+                "applied": applied,
+                "not_found": not_found,
+                "diff_count": len(diff_pairs),
+                "is_layout_only": True,
+            },
+            "findings": (
+                [{"severity": "low", "code": "positions_not_found",
+                  "message": f"functionId(s) not in COA: {not_found}"}]
+                if not_found else []
+            ),
+            "errors": [],
+        }, indent=2)
+
+    # Step 6 — actual write (dry_run=false)
+    # VERIFY: COA write endpoint — does SOAR 8.5 expose PUT /coa/playbooks/{id}?
+    # VERIFY: Does SOAR expose PATCH /coa/playbooks/{id} for partial position updates?
+    # Until live-verified, refuse the write and give instructions.
+    return json.dumps({
+        "ok": False,
+        "summary": (
+            "Write blocked: the COA write endpoint (/coa/playbooks/{id} PUT or PATCH) "
+            "has not been live-verified on this SOAR instance. "
+            "Run with dry_run=true first, then probe the endpoint and update VERIFICATION.md."
+        ),
+        "data": {
+            "playbook_id": current_id,
+            "dry_run": False,
+            "applied_in_memory": applied,
+            "not_found": not_found,
+        },
+        "findings": [{
+            "severity": "high",
+            "code": "write_endpoint_unverified",
+            "message": (
+                "COA PATCH/PUT endpoint not yet verified on SOAR 8.5. "
+                "Steps to unlock: (1) confirm /coa/playbooks/{id} accepts PUT/PATCH, "
+                "(2) document field format in VERIFICATION.md, "
+                "(3) remove this guard from tool_save_playbook_layout_only()."
+            ),
+        }],
+        "errors": [],
+    }, indent=2)
+
+
+# ==============================================================================
 # Dispatcher
 # ==============================================================================
 
@@ -1624,6 +3358,20 @@ _TOOL_HANDLERS = {
     # Write tools (v1.6.0+)
     "import_playbook": tool_import_playbook,
     "create_container": tool_create_container,
+    # COA Visual Editor tools (v1.6.3+)
+    "resolve_playbook_current_id": tool_resolve_playbook_current_id,
+    "get_playbook_identity_map": tool_get_playbook_identity_map,
+    "get_playbook_coa_summary": tool_get_playbook_coa_summary,
+    "list_playbook_nodes": tool_list_playbook_nodes,
+    "list_playbook_edges": tool_list_playbook_edges,
+    "check_saved_generated_python_drift": tool_check_saved_generated_python_drift,
+    "check_datapath_selectability": tool_check_datapath_selectability,
+    "diff_playbook_versions": tool_diff_playbook_versions,
+    "verify_layout_only_change": tool_verify_layout_only_change,
+    "validate_playbook_bundle": tool_validate_playbook_bundle,
+    "check_visual_editor_compat": tool_check_visual_editor_compat,
+    # Write tools (v1.6.3+)
+    "save_playbook_layout_only": tool_save_playbook_layout_only,
 }
 
 
