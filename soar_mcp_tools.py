@@ -551,6 +551,28 @@ TOOL_SCHEMAS: dict[str, dict] = {
             },
         },
     },
+    "list_assets": {
+        "description": (
+            "List configured SOAR assets (connector instances). "
+            "Returns asset ID, name, linked app ID, product name, and configuration status. "
+            "Actions are dispatched against assets (not apps) — use this after list_apps to "
+            "find which asset to target in a playbook action block."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "app_id": {
+                    "type": "integer",
+                    "description": "Filter assets by app ID (from list_apps). Leave empty for all assets.",
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Maximum number of results (default: 50).",
+                    "default": 50,
+                },
+            },
+        },
+    },
 }
 
 
@@ -1131,6 +1153,53 @@ def tool_create_artifact(client: SoarApiClient, config: McpServerConfig, args: d
 # ==============================================================================
 
 
+def tool_list_assets(client: SoarApiClient, config: McpServerConfig, args: dict) -> str:
+    """List configured SOAR assets (connector instances)."""
+    app_id_raw = args.get("app_id")
+    limit = min(int(args.get("limit") or config.max_results), config.max_results)
+
+    params: dict = {"page_size": 0}
+    if app_id_raw is not None:
+        app_id_val, err_msg = _require_positive_int(app_id_raw, "app_id")
+        if err_msg:
+            return err_msg
+        # VERIFY: filter param name on SOAR 8.5 (_filter_app vs _filter_app_id)
+        params["_filter_app"] = app_id_val
+
+    data, err = client.get("asset", params=params)
+    if err:
+        return f"Error listing assets: {err}"
+
+    assets = data.get("data", []) if isinstance(data, dict) else []
+    total = data.get("count", len(assets)) if isinstance(data, dict) else len(assets)
+    assets = assets[:limit]
+
+    if not assets:
+        return f"No assets found{' for app_id=' + str(app_id_raw) if app_id_raw else ''}."
+
+    lines = [f"Configured SOAR Assets ({len(assets)} shown, {total} total):"]
+    for a in assets:
+        # VERIFY: 'app' field on 8.5 — may be int (app_id) or nested dict
+        app_val = a.get("app")
+        if isinstance(app_val, int):
+            app_id_str = str(app_val)
+        elif isinstance(app_val, dict):
+            app_id_str = str(app_val.get("id", "?"))
+        else:
+            app_id_str = str(app_val) if app_val is not None else "unknown"
+
+        # VERIFY: 'configuration_status' vs 'configured' boolean on 8.5
+        cfg_status = a.get("configuration_status") or (
+            "configured" if a.get("configured") else "not configured"
+        )
+        lines.append(
+            f"\n  ID: {a.get('id')} | {a.get('name', '(unnamed)')}\n"
+            f"    App ID: {app_id_str} | Product: {a.get('product_name', 'unknown')}\n"
+            f"    Status: {cfg_status}"
+        )
+    return "\n".join(lines)
+
+
 def tool_list_apps(client: SoarApiClient, config: McpServerConfig, args: dict) -> str:
     """List installed SOAR apps/connectors."""
     name_filter = (args.get("name_contains") or "").strip().lower()
@@ -1198,6 +1267,7 @@ _TOOL_HANDLERS = {
     "create_artifact": tool_create_artifact,
     # Playbook-Discovery & Build tools (v1.6.0+)
     "list_apps": tool_list_apps,
+    "list_assets": tool_list_assets,
 }
 
 

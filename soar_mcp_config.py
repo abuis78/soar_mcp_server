@@ -47,6 +47,7 @@ ALL_TOOLS: list[str] = [
     "create_artifact",
     # Playbook-Discovery & Build (v1.6.0+)
     "list_apps",
+    "list_assets",
 ]
 
 READ_ONLY_TOOLS: frozenset[str] = frozenset(
@@ -64,6 +65,7 @@ READ_ONLY_TOOLS: frozenset[str] = frozenset(
         "get_soar_info",
         # Playbook-Discovery & Build read tools (v1.6.0+)
         "list_apps",
+        "list_assets",
     ]
 )
 

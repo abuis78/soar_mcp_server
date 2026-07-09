@@ -191,6 +191,13 @@
             "default": true,
             "required": false,
             "order": 50
+        },
+        "tool_list_assets": {
+            "description": "READ \u2014 list_assets: List configured SOAR assets (connector instances) with their linked app ID. Actions run on assets \u2014 use this after list_apps to resolve which asset to target.",
+            "data_type": "boolean",
+            "default": true,
+            "required": false,
+            "order": 51
         }
     },
     "actions": [
