@@ -8,8 +8,8 @@
     "product_version_regex": ".*",
     "publisher": "Andreas Buis",
     "license": "Copyright 2026 Andreas Buis",
-    "app_version": "1.5.0",
-    "utctime_updated": "2026-06-08T00:00:00.000000Z",
+    "app_version": "1.6.0",
+    "utctime_updated": "2026-07-09T00:00:00.000000Z",
     "package_name": "phantom_soar_mcp_server",
     "main_module": "soar_mcp_connector.py",
     "min_phantom_version": "6.0.0",
@@ -184,6 +184,48 @@
             "default": false,
             "required": false,
             "order": 41
+        },
+        "tool_list_apps": {
+            "description": "READ \u2014 list_apps: List installed SOAR apps/connectors (name, vendor, supported actions). Used by the playbook-builder skill for connector discovery.",
+            "data_type": "boolean",
+            "default": true,
+            "required": false,
+            "order": 50
+        },
+        "tool_list_assets": {
+            "description": "READ \u2014 list_assets: List configured SOAR assets (connector instances) with their linked app ID. Actions run on assets \u2014 use this after list_apps to resolve which asset to target.",
+            "data_type": "boolean",
+            "default": true,
+            "required": false,
+            "order": 51
+        },
+        "tool_get_action_schema": {
+            "description": "READ \u2014 get_action_schema: Return input parameters and output datapaths (e.g. action_result.summary.malicious) for a SOAR app's actions. Core discovery tool for the playbook-builder skill.",
+            "data_type": "boolean",
+            "default": true,
+            "required": false,
+            "order": 52
+        },
+        "tool_export_playbook": {
+            "description": "READ \u2014 export_playbook: Export a playbook as a base64-encoded gzip TAR (.tgz). Returns the blockly graph structure as a golden template for the playbook-builder skill.",
+            "data_type": "boolean",
+            "default": true,
+            "required": false,
+            "order": 53
+        },
+        "tool_import_playbook": {
+            "description": "WRITE \u26a0\ufe0f \u2014 import_playbook: Import a base64-encoded gzip TAR playbook archive into SOAR so it appears and is editable in the VPE. Enable only after verifying the export\u2192import round-trip.",
+            "data_type": "boolean",
+            "default": false,
+            "required": false,
+            "order": 60
+        },
+        "tool_create_container": {
+            "description": "WRITE \u26a0\ufe0f \u2014 create_container: Create an isolated test container for playbook self-testing. Requires BOTH this checkbox AND enable_test_harness = true in [safety] of mcp.conf. Never enable on production.",
+            "data_type": "boolean",
+            "default": false,
+            "required": false,
+            "order": 61
         }
     },
     "actions": [

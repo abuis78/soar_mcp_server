@@ -108,6 +108,29 @@ class SoarApiClient:
         except Exception as e:
             return None, f"Unexpected error: {type(e).__name__}"
 
+    def get_binary(self, path: str, params: dict | None = None) -> tuple[bytes | None, str | None]:
+        """GET request returning raw bytes (for binary endpoints like playbook export)."""
+        url = f"{self._base_url}/rest/{path.lstrip('/')}"
+        try:
+            resp = self._session.get(url, params=params, timeout=self._config.timeout)
+            if resp.status_code == 401:
+                return None, "Authentication failed (HTTP 401). Check ph-auth-token."
+            if resp.status_code == 403:
+                return None, "Access denied (HTTP 403). Token may lack required permissions."
+            if resp.status_code == 404:
+                return None, "Resource not found (HTTP 404)."
+            if resp.status_code >= 400:
+                return None, f"SOAR API error HTTP {resp.status_code}: {resp.text[:200]}"
+            return resp.content, None
+        except requests.exceptions.Timeout:
+            return None, f"SOAR REST API timed out after {self._config.timeout}s"
+        except requests.exceptions.SSLError as e:
+            return None, f"SSL error: {e}"
+        except requests.exceptions.ConnectionError as e:
+            return None, f"Connection error: {e}"
+        except Exception as e:
+            return None, f"Unexpected error: {type(e).__name__}"
+
     def _handle_response(self, resp: requests.Response) -> tuple[Any, str | None]:
         if resp.status_code == 401:
             return None, "Authentication failed (HTTP 401). Check ph-auth-token in the MCP client config."
@@ -527,6 +550,148 @@ TOOL_SCHEMAS: dict[str, dict] = {
                 },
             },
             "required": ["case_id", "name", "artifact_type"],
+        },
+    },
+    # ── Playbook-Discovery & Build tools (v1.6.0+) ────────────────────────────
+    "list_apps": {
+        "description": (
+            "List installed SOAR apps/connectors. "
+            "Returns app ID, name, publisher, product name, and supported action names. "
+            "Use this to discover which connectors are available before building a playbook."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "name_contains": {
+                    "type": "string",
+                    "description": "Optional substring filter applied client-side to app name or product name (case-insensitive).",
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Maximum number of results (default: 50).",
+                    "default": 50,
+                },
+            },
+        },
+    },
+    "list_assets": {
+        "description": (
+            "List configured SOAR assets (connector instances). "
+            "Returns asset ID, name, linked app ID, product name, and configuration status. "
+            "Actions are dispatched against assets (not apps) — use this after list_apps to "
+            "find which asset to target in a playbook action block."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "app_id": {
+                    "type": "integer",
+                    "description": "Filter assets by app ID (from list_apps). Leave empty for all assets.",
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Maximum number of results (default: 50).",
+                    "default": 50,
+                },
+            },
+        },
+    },
+    "get_action_schema": {
+        "description": (
+            "Get detailed input parameters and output datapaths for actions of a SOAR app. "
+            "Returns for each action: parameter names, data types, required flag, contains tags, "
+            "and output datapaths (e.g. action_result.summary.malicious). "
+            "Use this after list_apps to understand what inputs an action needs and which datapath "
+            "to reference in a playbook decision block."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "app_id": {
+                    "type": "integer",
+                    "description": "App ID from list_apps. At least one of app_id or action_name is required.",
+                },
+                "action_name": {
+                    "type": "string",
+                    "description": "Filter to actions matching this name substring (case-insensitive). If app_id is omitted, also used to search for the app.",
+                },
+            },
+        },
+    },
+    "export_playbook": {
+        "description": (
+            "Export a SOAR playbook as a base64-encoded gzip TAR archive (.tgz). "
+            "The archive contains the playbook's blockly graph, which is the structural "
+            "ground-truth used by the Visual Playbook Editor (VPE) and the playbook-builder skill. "
+            "Use a known-good playbook as a golden template before generating a new one."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "playbook_id": {
+                    "type": "integer",
+                    "description": "Numeric SOAR playbook ID (from list_playbooks).",
+                },
+            },
+            "required": ["playbook_id"],
+        },
+    },
+    "import_playbook": {
+        "description": (
+            "Import a playbook archive into SOAR so it appears and is editable in the "
+            "Visual Playbook Editor (VPE). Accepts a base64-encoded gzip TAR archive "
+            "(as returned by export_playbook). "
+            "WRITE operation — disabled by default. Enable in asset config and mcp.conf."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "archive_b64": {
+                    "type": "string",
+                    "description": "Base64-encoded gzip TAR archive of the playbook (output of export_playbook or generated by skill).",
+                },
+                "scm": {
+                    "type": "string",
+                    "description": "Source Control Management repo name to import into (default: 'local').",
+                    "default": "local",
+                },
+                "force": {
+                    "type": "boolean",
+                    "description": "Overwrite existing playbook with the same name (default: false).",
+                    "default": False,
+                },
+            },
+            "required": ["archive_b64"],
+        },
+    },
+    "create_container": {
+        "description": (
+            "Create a labeled SOAR container (case) for isolated playbook self-testing. "
+            "The container is tagged with the supplied label so it can be identified and "
+            "cleaned up after testing. Never use this against real case queues. "
+            "WRITE operation — disabled by default. Also requires enable_test_harness = true "
+            "in [safety] of mcp.conf as an additional safety gate."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "Container name (e.g. 'test_url_rep_2026-07-09').",
+                },
+                "label": {
+                    "type": "string",
+                    "description": "Container label/type (default: 'test'). Use a dedicated test label to keep test cases separate.",
+                    "default": "test",
+                },
+                "severity": {
+                    "type": "string",
+                    "description": "Severity level (default: 'low').",
+                    "enum": ["high", "medium", "low", "informational"],
+                    "default": "low",
+                },
+            },
+            "required": ["name"],
         },
     },
 }
@@ -1105,6 +1270,343 @@ def tool_create_artifact(client: SoarApiClient, config: McpServerConfig, args: d
 
 
 # ==============================================================================
+# Playbook-Discovery & Build tool implementations (v1.6.0+)
+# ==============================================================================
+
+
+def tool_create_container(client: SoarApiClient, config: McpServerConfig, args: dict) -> str:
+    """Create an isolated test container for playbook self-testing."""
+    # Double gate: tool enable flag (from asset config) AND safety flag in mcp.conf
+    if not getattr(config, "enable_test_harness", False):
+        return (
+            "Error: create_container also requires enable_test_harness = true in the "
+            "[safety] section of mcp.conf. This prevents accidental case creation in "
+            "production SOAR instances. Set it to true only on test/dev instances."
+        )
+
+    name = (args.get("name") or "").strip()
+    if not name:
+        return "Error: name is required."
+
+    label = (args.get("label") or "test").strip()
+    severity = (args.get("severity") or "low").strip().lower()
+    if severity not in _VALID_SEVERITIES:
+        severity = "low"
+
+    body = {
+        "name": name,
+        "label": label,
+        "severity": severity,
+        "status": "new",
+    }
+
+    data, err = client.post("container", body)
+    if err:
+        return f"Error creating container: {err}"
+
+    if not isinstance(data, dict):
+        return f"Container create response (raw): {data}"
+
+    # VERIFY: response field 'id' on SOAR 8.5 (standard REST create response)
+    container_id = data.get("id") or data.get("container_id") or "unknown"
+    failed = data.get("failed", False)
+    if failed:
+        return f"Error: SOAR reported failed=true. Response: {data}"
+
+    return (
+        f"✅ Test container created.\n"
+        f"  Container ID: {container_id}\n"
+        f"  Name: {name}\n"
+        f"  Label: {label} | Severity: {severity}"
+    ) + (_disclaimer() if config.advisory_disclaimer else "")
+
+
+def tool_import_playbook(client: SoarApiClient, config: McpServerConfig, args: dict) -> str:
+    """Import a playbook archive into SOAR (POST /rest/import_playbook)."""
+    import base64 as _b64
+
+    archive_b64 = (args.get("archive_b64") or "").strip()
+    if not archive_b64:
+        return "Error: archive_b64 is required."
+
+    try:
+        _b64.b64decode(archive_b64, validate=True)
+    except Exception:
+        return "Error: archive_b64 is not valid base64."
+
+    scm = (args.get("scm") or "local").strip()
+    force = bool(args.get("force", False))
+
+    # VERIFY: field name 'scm' vs 'scm_id' on SOAR 8.5.
+    # The SOAR REST reference (Appendix A) uses 'scm'; 'scm_id' is an alias on some versions.
+    body: dict = {
+        "playbook": archive_b64,
+        "scm": scm,
+        "force": force,
+    }
+
+    data, err = client.post("import_playbook", body)
+    if err:
+        return f"Error importing playbook: {err}"
+
+    if not isinstance(data, dict):
+        return f"Import response (raw): {data}"
+
+    # VERIFY: response field names on SOAR 8.5 — 'playbook_id' / 'id' / 'name' / 'status'
+    pb_id = data.get("playbook_id") or data.get("id") or "unknown"
+    name = data.get("playbook") or data.get("name") or "unknown"
+    status = data.get("status") or data.get("message") or "imported"
+
+    return (
+        f"✅ Playbook imported successfully.\n"
+        f"  Name: {name}\n"
+        f"  ID: {pb_id}\n"
+        f"  Status: {status}"
+    ) + (_disclaimer() if config.advisory_disclaimer else "")
+
+
+def tool_export_playbook(client: SoarApiClient, config: McpServerConfig, args: dict) -> str:
+    """Export a playbook as a base64-encoded gzip TAR archive."""
+    import base64 as _b64
+
+    pb_id, err_msg = _require_positive_int(args.get("playbook_id"), "playbook_id")
+    if err_msg:
+        return err_msg
+
+    # VERIFY: GET /rest/playbook/{id}/export returns x-gzip binary on SOAR 8.5
+    # (confirmed in SOAR REST reference for 8.x and Appendix A of the instruction)
+    content, err = client.get_binary(f"playbook/{pb_id}/export")
+    if err:
+        return f"Error exporting playbook {pb_id}: {err}"
+
+    if not content:
+        return f"Error: empty response for playbook {pb_id} export."
+
+    encoded = _b64.b64encode(content).decode("ascii")
+    return (
+        f"Playbook #{pb_id} exported ({len(content):,} bytes).\n"
+        f"archive_b64: {encoded}"
+    )
+
+
+def tool_get_action_schema(client: SoarApiClient, config: McpServerConfig, args: dict) -> str:
+    """Return input parameters and output datapaths for actions of a SOAR app."""
+    app_id_raw = args.get("app_id")
+    action_filter = (args.get("action_name") or "").strip().lower()
+
+    if not app_id_raw and not action_filter:
+        return "Error: at least one of app_id or action_name is required."
+
+    # If only action_name given, search for the app by supported action
+    if not app_id_raw and action_filter:
+        # VERIFY: '_filter_supported_actions__icontains' filter on SOAR 8.5
+        search_data, search_err = client.get("app", params={
+            "page_size": 0,
+            "_filter_supported_actions__icontains": action_filter,
+        })
+        if not search_err and isinstance(search_data, dict):
+            candidates = search_data.get("data") or []
+            if candidates:
+                app_id_raw = candidates[0].get("id")
+            else:
+                # Fallback: plain text search
+                all_data, _ = client.get("app", params={"page_size": 0})
+                if isinstance(all_data, dict):
+                    for a in (all_data.get("data") or []):
+                        for act in (a.get("supported_actions") or []):
+                            if action_filter in act.lower():
+                                app_id_raw = a.get("id")
+                                break
+                        if app_id_raw:
+                            break
+        if not app_id_raw:
+            return (
+                f"No app found with an action matching '{action_filter}'. "
+                f"Try list_apps to browse installed connectors."
+            )
+
+    app_id, err_msg = _require_positive_int(app_id_raw, "app_id")
+    if err_msg:
+        return err_msg
+
+    data, err = client.get(f"app/{app_id}")
+    if err:
+        return f"Error fetching app {app_id}: {err}"
+    if not isinstance(data, dict):
+        return f"Error: unexpected response type for app {app_id}"
+
+    # VERIFY: on SOAR 8.5 the action definitions live in 'app_json' (may be a
+    # string or already-parsed dict). Fall back to top-level 'actions' if absent.
+    app_json_raw = data.get("app_json")
+    if isinstance(app_json_raw, str):
+        try:
+            app_json = json.loads(app_json_raw)
+        except Exception:
+            app_json = {}
+    elif isinstance(app_json_raw, dict):
+        app_json = app_json_raw
+    else:
+        app_json = {}
+
+    actions = app_json.get("actions") or data.get("actions") or []
+
+    if not actions:
+        return (
+            f"App {app_id} ({data.get('name', 'unknown')}): no action schema found "
+            f"in 'app_json' or top-level 'actions'.\n"
+            f"# VERIFY: top-level keys present: {sorted(data.keys())}\n"
+            f"# VERIFY: app_json keys present: {sorted(app_json.keys()) if app_json else '(empty)'}"
+        )
+
+    if action_filter:
+        actions = [
+            a for a in actions
+            if action_filter in (a.get("action") or "").lower()
+            or action_filter in (a.get("identifier") or "").lower()
+        ]
+    if not actions:
+        return f"No action matching '{action_filter}' found in app {app_id}."
+
+    app_name = data.get("name", f"app_{app_id}")
+    lines = [f"Action Schema — {app_name} (app_id={app_id}):"]
+
+    for action in actions[:20]:
+        label = action.get("action") or action.get("identifier") or "?"
+        a_type = action.get("type", "unknown")
+        read_only = action.get("read_only", "?")
+        lines.append(f"\n  ── {label} (type={a_type}, read_only={read_only}) ──")
+
+        # VERIFY: 'parameters' is a dict on 8.5 (keys = param names)
+        # or a list [{name, data_type, ...}] — handle both
+        params_raw = action.get("parameters") or {}
+        if isinstance(params_raw, dict):
+            if params_raw:
+                lines.append("    Parameters:")
+                for p_name, p_info in params_raw.items():
+                    if not isinstance(p_info, dict):
+                        continue
+                    req = "required" if p_info.get("required") else "optional"
+                    dtype = p_info.get("data_type", "string")
+                    contains = p_info.get("contains") or []
+                    c_str = f"  [contains: {', '.join(contains)}]" if contains else ""
+                    lines.append(f"      {p_name} ({dtype}, {req}){c_str}")
+            else:
+                lines.append("    Parameters: (none)")
+        elif isinstance(params_raw, list):
+            lines.append("    Parameters:")
+            for p in params_raw:
+                p_name = p.get("name") or p.get("data_item_name") or "?"
+                req = "required" if p.get("required") else "optional"
+                dtype = p.get("data_type", "string")
+                contains = p.get("contains") or []
+                c_str = f"  [contains: {', '.join(contains)}]" if contains else ""
+                lines.append(f"      {p_name} ({dtype}, {req}){c_str}")
+
+        outputs = action.get("output") or []
+        if outputs:
+            lines.append("    Output datapaths:")
+            for o in outputs[:20]:
+                dp = o.get("data_path", "?")
+                dtype = o.get("data_type", "?")
+                contains = o.get("contains") or []
+                c_str = f"  [contains: {', '.join(contains)}]" if contains else ""
+                lines.append(f"      {dp} ({dtype}){c_str}")
+        else:
+            lines.append("    Output datapaths: (none)")
+
+    return "\n".join(lines)
+
+
+def tool_list_assets(client: SoarApiClient, config: McpServerConfig, args: dict) -> str:
+    """List configured SOAR assets (connector instances)."""
+    app_id_raw = args.get("app_id")
+    limit = min(int(args.get("limit") or config.max_results), config.max_results)
+
+    params: dict = {"page_size": 0}
+    if app_id_raw is not None:
+        app_id_val, err_msg = _require_positive_int(app_id_raw, "app_id")
+        if err_msg:
+            return err_msg
+        # VERIFY: filter param name on SOAR 8.5 (_filter_app vs _filter_app_id)
+        params["_filter_app"] = app_id_val
+
+    data, err = client.get("asset", params=params)
+    if err:
+        return f"Error listing assets: {err}"
+
+    assets = data.get("data", []) if isinstance(data, dict) else []
+    total = data.get("count", len(assets)) if isinstance(data, dict) else len(assets)
+    assets = assets[:limit]
+
+    if not assets:
+        return f"No assets found{' for app_id=' + str(app_id_raw) if app_id_raw else ''}."
+
+    lines = [f"Configured SOAR Assets ({len(assets)} shown, {total} total):"]
+    for a in assets:
+        # VERIFY: 'app' field on 8.5 — may be int (app_id) or nested dict
+        app_val = a.get("app")
+        if isinstance(app_val, int):
+            app_id_str = str(app_val)
+        elif isinstance(app_val, dict):
+            app_id_str = str(app_val.get("id", "?"))
+        else:
+            app_id_str = str(app_val) if app_val is not None else "unknown"
+
+        # VERIFY: 'configuration_status' vs 'configured' boolean on 8.5
+        cfg_status = a.get("configuration_status") or (
+            "configured" if a.get("configured") else "not configured"
+        )
+        lines.append(
+            f"\n  ID: {a.get('id')} | {a.get('name', '(unnamed)')}\n"
+            f"    App ID: {app_id_str} | Product: {a.get('product_name', 'unknown')}\n"
+            f"    Status: {cfg_status}"
+        )
+    return "\n".join(lines)
+
+
+def tool_list_apps(client: SoarApiClient, config: McpServerConfig, args: dict) -> str:
+    """List installed SOAR apps/connectors."""
+    name_filter = (args.get("name_contains") or "").strip().lower()
+    limit = min(int(args.get("limit") or config.max_results), config.max_results)
+
+    data, err = client.get("app", params={"page_size": 0})
+    if err:
+        return f"Error listing apps: {err}"
+
+    # VERIFY: 'data' array field name on SOAR 8.5 (expected from REST reference)
+    apps = data.get("data", []) if isinstance(data, dict) else []
+    total = data.get("count", len(apps)) if isinstance(data, dict) else len(apps)
+
+    if name_filter:
+        apps = [
+            a for a in apps
+            if name_filter in (a.get("name") or "").lower()
+            or name_filter in (a.get("product_name") or "").lower()
+        ]
+
+    apps = apps[:limit]
+    if not apps:
+        return f"No apps found{' matching ' + repr(name_filter) if name_filter else ''}."
+
+    lines = [f"Installed SOAR Apps ({len(apps)} shown, {total} total):"]
+    for a in apps:
+        # VERIFY: 'supported_actions' field name on SOAR 8.5
+        supported = a.get("supported_actions") or []
+        actions_str = (
+            f"{len(supported)} action(s): {', '.join(supported[:5])}"
+            + (" …" if len(supported) > 5 else "")
+            if supported else "actions unknown (call get_action_schema)"
+        )
+        lines.append(
+            f"\n  ID: {a.get('id')} | {a.get('name', '(unnamed)')}\n"
+            f"    Vendor: {a.get('product_vendor') or a.get('publisher') or 'unknown'} | "
+            f"Product: {a.get('product_name', 'unknown')}\n"
+            f"    {actions_str}"
+        )
+    return "\n".join(lines)
+
+
+# ==============================================================================
 # Dispatcher
 # ==============================================================================
 
@@ -1127,6 +1629,14 @@ _TOOL_HANDLERS = {
     "update_case_severity": tool_update_case_severity,
     "update_case_owner": tool_update_case_owner,
     "create_artifact": tool_create_artifact,
+    # Playbook-Discovery & Build tools (v1.6.0+)
+    "list_apps": tool_list_apps,
+    "list_assets": tool_list_assets,
+    "get_action_schema": tool_get_action_schema,
+    "export_playbook": tool_export_playbook,
+    # Write tools (v1.6.0+)
+    "import_playbook": tool_import_playbook,
+    "create_container": tool_create_container,
 }
 
 
