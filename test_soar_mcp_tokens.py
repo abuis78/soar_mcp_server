@@ -12,6 +12,7 @@ import unittest
 from pathlib import Path
 
 from soar_mcp_tokens import TokenStore, sanitise_args_for_audit
+from soar_mcp_config import McpServerConfig, ALL_TOOLS, READ_ONLY_TOOLS
 
 
 class TokenStoreTest(unittest.TestCase):
@@ -113,6 +114,79 @@ class SanitiseArgsTest(unittest.TestCase):
         out = sanitise_args_for_audit({"description": long_val})
         self.assertTrue(out["description"].endswith("<truncated>"))
         self.assertLessEqual(len(out["description"]), 220)
+
+
+class TestWriteToolGates(unittest.TestCase):
+    """Prove write tools are correctly gated by config flags and enable_test_harness."""
+
+    def _make_config(self, **kwargs) -> McpServerConfig:
+        cfg = McpServerConfig()
+        cfg.enabled_tools = set(READ_ONLY_TOOLS)
+        for k, v in kwargs.items():
+            setattr(cfg, k, v)
+        return cfg
+
+    def test_import_playbook_disabled_when_flag_false(self):
+        """import_playbook must not appear in tools/list when tool flag is off."""
+        cfg = self._make_config()
+        self.assertNotIn("import_playbook", cfg.enabled_tools)
+
+    def test_import_playbook_enabled_when_flag_true(self):
+        """import_playbook appears in enabled_tools when explicitly added."""
+        cfg = self._make_config()
+        cfg.enabled_tools = set(READ_ONLY_TOOLS) | {"import_playbook"}
+        self.assertIn("import_playbook", cfg.enabled_tools)
+
+    def test_create_container_disabled_when_flag_false(self):
+        """create_container not in read-only default set."""
+        cfg = self._make_config()
+        self.assertNotIn("create_container", cfg.enabled_tools)
+
+    def test_create_container_requires_enable_test_harness(self):
+        """create_container tool flag alone is not enough — enable_test_harness must also be true."""
+        from soar_mcp_tools import tool_create_container
+
+        class _FakeClient:
+            pass
+
+        cfg = self._make_config(enable_test_harness=False)
+        cfg.enabled_tools = set(READ_ONLY_TOOLS) | {"create_container"}
+        result = tool_create_container(_FakeClient(), cfg, {"name": "test", "label": "test", "severity": "low"})
+        self.assertIn("enable_test_harness", result)
+        self.assertIn("Error", result)
+
+    def test_create_container_passes_gate_when_harness_enabled(self):
+        """With enable_test_harness=True, create_container proceeds past the gate (may fail for other reasons)."""
+        from soar_mcp_tools import tool_create_container
+
+        class _FakeClient:
+            def post(self, path, body):
+                return {"id": 999, "success": True}, None
+
+        cfg = self._make_config(enable_test_harness=True)
+        result = tool_create_container(_FakeClient(), cfg, {"name": "test", "label": "test", "severity": "low"})
+        self.assertNotIn("enable_test_harness", result)
+
+    def test_run_playbook_not_in_read_only_tools(self):
+        """run_playbook must not be in READ_ONLY_TOOLS."""
+        self.assertNotIn("run_playbook", READ_ONLY_TOOLS)
+
+    def test_create_artifact_not_in_read_only_tools(self):
+        """create_artifact must not be in READ_ONLY_TOOLS."""
+        self.assertNotIn("create_artifact", READ_ONLY_TOOLS)
+
+    def test_all_new_playbook_builder_tools_in_all_tools(self):
+        """All 6 v1.6.0+ tools must be registered in ALL_TOOLS."""
+        for tool in ("list_apps", "list_assets", "get_action_schema", "export_playbook",
+                     "import_playbook", "create_container"):
+            with self.subTest(tool=tool):
+                self.assertIn(tool, ALL_TOOLS)
+
+    def test_read_tools_in_read_only_tools(self):
+        """list_apps, list_assets, get_action_schema, export_playbook must be in READ_ONLY_TOOLS."""
+        for tool in ("list_apps", "list_assets", "get_action_schema", "export_playbook"):
+            with self.subTest(tool=tool):
+                self.assertIn(tool, READ_ONLY_TOOLS)
 
 
 if __name__ == "__main__":
