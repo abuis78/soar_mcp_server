@@ -1,12 +1,12 @@
 # SOAR MCP Server
 
-**Splunk SOAR On-Premises App — v1.4.15**
+**Splunk SOAR On-Premises App — v1.6.2**
 
 Transform Splunk SOAR into an MCP (Model Context Protocol) server endpoint for direct AI integration. Claude Desktop, Claude Code, Claude.ai, or any MCP-compatible AI client can connect directly to your SOAR instance for structured access to cases, artifacts, playbooks, and analyst notes — completely on-premises, with zero external dependencies.
 
 **Key Features:**
 - ✅ **100% On-Premises** — No cloud services, no data exfiltration
-- ✅ **Read-Only by Default** — 11 read tools active, 6 write tools opt-in
+- ✅ **Read-Only by Default** — 17 read tools active, 6 write tools enabled by default (playbook-builder), 5 analyst write tools opt-in
 - ✅ **Asset-Based Configuration** — Control tool availability via SOAR UI checkboxes
 - ✅ **AI Instructions Field** — Inject SOC-specific context into every AI session
 - ✅ **Custom Widgets** — Built-in Config Builder with copy-paste snippets for Claude Desktop/Code
@@ -55,7 +55,7 @@ Transform Splunk SOAR into an MCP (Model Context Protocol) server endpoint for d
 
 ### Step 1: Install the App
 
-1. **Download** `soar_mcp_server_v1.4.15.tar` from this repository
+1. **Download** `soar_mcp_server_v1.6.2.tar` from this repository
 2. In SOAR: **Apps → Install App** (top-right button)
 3. **Upload** the TAR file
 4. Click **Install** and wait for completion
@@ -234,7 +234,7 @@ All tools are controlled via **asset configuration checkboxes** in the SOAR UI. 
 
 ### Read-Only Tools (Enabled by Default)
 
-These 11 tools provide comprehensive read-only access to your SOAR instance:
+These 17 tools provide comprehensive read-only access to your SOAR instance:
 
 | Tool | Parameters | Returns | Use Case |
 |------|-----------|---------|----------|
@@ -280,7 +280,7 @@ To check which tools are currently enabled for your Claude connection:
 
 ### Asset-Based Configuration (Recommended)
 
-**v1.4.15 introduces asset-based configuration** via checkboxes in the SOAR UI. This is now the primary configuration method and survives app upgrades.
+**v1.6.2 introduces asset-based configuration** via checkboxes in the SOAR UI. This is now the primary configuration method and survives app upgrades.
 
 **Location:** SOAR UI → **Apps → SOAR MCP Server → Asset Settings → Configure Asset**
 
@@ -903,7 +903,7 @@ python3 soar_mcp_handler.py --mock --port 8743
 - 🐛 Documented SOAR's outer Django auth reality: only `ph-auth-token` reaches the handler; `Authorization: Bearer` is rejected upstream as "Invalid JWT"
 - 🐛 Tolerate (and ignore) `Mcp-Session-Id` header from Streamable HTTP clients
 
-### v1.4.15 (2026-04-20)
+### v1.6.2 (2026-04-20)
 - ✨ Asset-based configuration with UI checkboxes
 - ✨ AI Instructions field for SOC-specific context injection
 - ✨ Custom Config Builder widget with copy-paste snippets

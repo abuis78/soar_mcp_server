@@ -1,117 +1,46 @@
-# SOAR MCP Server - Live Tools
+# SOAR MCP Server — Live Tools (v1.6.2)
 
-**Version**: Deployed on Claude.ai (April 20, 2026)  
-**Status**: Read-only tools active
+## Read-only tools (enabled by default)
 
-## Available Tools (11 READ-only)
+### Case & Incident Management
+- `list_cases` — List cases with status/severity/label/owner/limit filters
+- `get_case` — Full case details by ID
+- `search_cases` — Keyword search across title, description, tags
+- `list_artifacts` — List artifacts for a case
+- `get_artifact` — Full artifact details by ID
+- `list_case_notes` — List notes/comments on a case
+- `list_users` — List SOAR users
+- `get_soar_info` — SOAR platform version and health
 
-### Case Management
+### Playbook Operations (read)
+- `list_playbooks` — List available playbooks with name, category, active status
+- `get_playbook_run` — Status and results of a specific playbook run
+- `list_action_runs` — Recent action runs with status and results
 
-#### `list_cases`
-List SOAR cases (containers) with optional filters. Returns case ID, title, status, severity, owner, label, and tags.
+### Playbook-Discovery & Build (v1.6.0+, read)
+- `list_apps` — Enumerate installed connectors (name, vendor, app_id)
+- `list_assets` — Map configured assets to app IDs
+- `get_action_schema` — Action parameters and output datapaths via /rest/app_action
+- `export_playbook` — Export playbook as base64 gzip TAR (blockly golden template)
 
-**Parameters:**
-- `status` (optional): Filter by status: open, closed, resolved, new, in_progress
-- `severity` (optional): Filter by severity: high, medium, low, informational
-- `label` (optional): Filter by case label/type (e.g. phishing, malware, incident)
-- `owner` (optional): Filter by owner username
-- `limit` (optional): Maximum number of cases to return (default: 20, max: 50)
+## Write tools (enabled by default — playbook-builder required)
+- `run_playbook` — Trigger a playbook on a case
+- `create_artifact` — Add an artifact/IOC to a case
+- `import_playbook` — Import a base64-encoded gzip TAR playbook into SOAR VPE
+- `create_container` — Create an isolated test container (double-gated: also requires enable_test_harness=true in mcp.conf)
 
-#### `get_case`
-Get full details of a specific SOAR case by ID. Returns title, description, status, severity, owner, tags, artifacts count, notes count, playbook runs, and all custom fields.
+## Write tools (analyst-facing — disabled by default)
+- `add_case_note` — Add a note/comment to a case
+- `update_case_status` — Change case status
+- `update_case_severity` — Change case severity
+- `update_case_owner` — Reassign a case
 
-**Parameters:**
-- `case_id` (required): The numeric SOAR container/case ID
+## Token scopes
 
-#### `search_cases`
-Search SOAR cases by keyword across title, description, and tags. Returns matching cases sorted by creation time (newest first).
+### Read-only playbook-builder scope
+Mint via `mint mcp token` action. Include: all 17 read tools + get_action_schema, export_playbook, list_apps, list_assets.
+Exclude: all write tools.
 
-**Parameters:**
-- `query` (required): Search term to look for in case title and description
-- `limit` (optional): Maximum number of results (default: 20)
-
-#### `list_case_notes`
-List all analyst notes and comments on a SOAR case. Returns note content, author, creation time.
-
-**Parameters:**
-- `case_id` (required): The SOAR container/case ID
-
----
-
-### Artifact Management
-
-#### `list_artifacts`
-List all artifacts (IOCs, observables) associated with a SOAR case. Returns artifact ID, type, name, CEF fields (IP, domain, hash, URL, email, etc.), source, and creation time.
-
-**Parameters:**
-- `case_id` (required): The SOAR container/case ID to list artifacts for
-- `artifact_type` (optional): Optional filter by CEF artifact type (e.g. ip, domain, hash, email, url)
-
-#### `get_artifact`
-Get full details of a specific artifact by ID. Returns all CEF fields, tags, source, and associated case.
-
-**Parameters:**
-- `artifact_id` (required): The numeric SOAR artifact ID
-
----
-
-### Playbook & Automation
-
-#### `list_playbooks`
-List all available SOAR playbooks with name, description, category, and active status.
-
-**Parameters:**
-- `active_only` (optional): Return only active playbooks (default: true)
-- `category` (optional): Optional filter by playbook category
-
-#### `get_playbook_run`
-Get the status and results of a specific playbook run. Returns run status (running, success, failed), start/end time, action results, and any output data.
-
-**Parameters:**
-- `run_id` (required): The SOAR playbook run ID
-
-#### `list_action_runs`
-List recent action runs for a case, showing what automated actions have been executed, their status, app used, and results.
-
-**Parameters:**
-- `case_id` (required): The SOAR container/case ID
-- `limit` (optional): Maximum number of action runs to return (default: 20)
-
----
-
-### System & Users
-
-#### `list_users`
-List SOAR users with username, display name, email, and role.
-
-**Parameters:**
-- `role` (optional): Optional filter by role name
-
-#### `get_soar_info`
-Get system information about this SOAR instance: version, license info, connected apps count, and overall health status.
-
-**Parameters:** None
-
----
-
-## Not Currently Active
-
-The following WRITE tools are defined in the app configuration but **NOT enabled** in the live deployment:
-
-- `add_case_note` - Add a note/comment to a case
-- `create_artifact` - Add a new artifact/IOC to a case
-- `run_playbook` - Trigger a SOAR playbook on a case
-- `update_case_owner` - Reassign a case to a different analyst
-- `update_case_severity` - Change the severity level of a case
-- `update_case_status` - Change case status
-
----
-
-## Usage Context
-
-This MCP server is connected to **OpenClaw SOC** (Splunk SOAR instance) and accessible through:
-- Claude Desktop (via MCP configuration)
-- Claude.ai web interface (via connector integration)
-- Claude Code (via MCP configuration)
-
-**Security Model**: Read-only by default. Write operations require explicit asset configuration checkbox enablement in SOAR.
+### Write/self-test scope
+Add to read scope: run_playbook, create_artifact, import_playbook, create_container.
+Requires enable_test_harness=true in mcp.conf for create_container.
