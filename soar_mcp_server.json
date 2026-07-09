@@ -198,6 +198,13 @@
             "default": true,
             "required": false,
             "order": 51
+        },
+        "tool_get_action_schema": {
+            "description": "READ \u2014 get_action_schema: Return input parameters and output datapaths (e.g. action_result.summary.malicious) for a SOAR app's actions. Core discovery tool for the playbook-builder skill.",
+            "data_type": "boolean",
+            "default": true,
+            "required": false,
+            "order": 52
         }
     },
     "actions": [

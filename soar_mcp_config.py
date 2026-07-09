@@ -48,6 +48,7 @@ ALL_TOOLS: list[str] = [
     # Playbook-Discovery & Build (v1.6.0+)
     "list_apps",
     "list_assets",
+    "get_action_schema",
 ]
 
 READ_ONLY_TOOLS: frozenset[str] = frozenset(
@@ -66,6 +67,7 @@ READ_ONLY_TOOLS: frozenset[str] = frozenset(
         # Playbook-Discovery & Build read tools (v1.6.0+)
         "list_apps",
         "list_assets",
+        "get_action_schema",
     ]
 )
 

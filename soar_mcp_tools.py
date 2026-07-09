@@ -573,6 +573,28 @@ TOOL_SCHEMAS: dict[str, dict] = {
             },
         },
     },
+    "get_action_schema": {
+        "description": (
+            "Get detailed input parameters and output datapaths for actions of a SOAR app. "
+            "Returns for each action: parameter names, data types, required flag, contains tags, "
+            "and output datapaths (e.g. action_result.summary.malicious). "
+            "Use this after list_apps to understand what inputs an action needs and which datapath "
+            "to reference in a playbook decision block."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "app_id": {
+                    "type": "integer",
+                    "description": "App ID from list_apps. At least one of app_id or action_name is required.",
+                },
+                "action_name": {
+                    "type": "string",
+                    "description": "Filter to actions matching this name substring (case-insensitive). If app_id is omitted, also used to search for the app.",
+                },
+            },
+        },
+    },
 }
 
 
@@ -1153,6 +1175,134 @@ def tool_create_artifact(client: SoarApiClient, config: McpServerConfig, args: d
 # ==============================================================================
 
 
+def tool_get_action_schema(client: SoarApiClient, config: McpServerConfig, args: dict) -> str:
+    """Return input parameters and output datapaths for actions of a SOAR app."""
+    app_id_raw = args.get("app_id")
+    action_filter = (args.get("action_name") or "").strip().lower()
+
+    if not app_id_raw and not action_filter:
+        return "Error: at least one of app_id or action_name is required."
+
+    # If only action_name given, search for the app by supported action
+    if not app_id_raw and action_filter:
+        # VERIFY: '_filter_supported_actions__icontains' filter on SOAR 8.5
+        search_data, search_err = client.get("app", params={
+            "page_size": 0,
+            "_filter_supported_actions__icontains": action_filter,
+        })
+        if not search_err and isinstance(search_data, dict):
+            candidates = search_data.get("data") or []
+            if candidates:
+                app_id_raw = candidates[0].get("id")
+            else:
+                # Fallback: plain text search
+                all_data, _ = client.get("app", params={"page_size": 0})
+                if isinstance(all_data, dict):
+                    for a in (all_data.get("data") or []):
+                        for act in (a.get("supported_actions") or []):
+                            if action_filter in act.lower():
+                                app_id_raw = a.get("id")
+                                break
+                        if app_id_raw:
+                            break
+        if not app_id_raw:
+            return (
+                f"No app found with an action matching '{action_filter}'. "
+                f"Try list_apps to browse installed connectors."
+            )
+
+    app_id, err_msg = _require_positive_int(app_id_raw, "app_id")
+    if err_msg:
+        return err_msg
+
+    data, err = client.get(f"app/{app_id}")
+    if err:
+        return f"Error fetching app {app_id}: {err}"
+    if not isinstance(data, dict):
+        return f"Error: unexpected response type for app {app_id}"
+
+    # VERIFY: on SOAR 8.5 the action definitions live in 'app_json' (may be a
+    # string or already-parsed dict). Fall back to top-level 'actions' if absent.
+    app_json_raw = data.get("app_json")
+    if isinstance(app_json_raw, str):
+        try:
+            app_json = json.loads(app_json_raw)
+        except Exception:
+            app_json = {}
+    elif isinstance(app_json_raw, dict):
+        app_json = app_json_raw
+    else:
+        app_json = {}
+
+    actions = app_json.get("actions") or data.get("actions") or []
+
+    if not actions:
+        return (
+            f"App {app_id} ({data.get('name', 'unknown')}): no action schema found "
+            f"in 'app_json' or top-level 'actions'.\n"
+            f"# VERIFY: top-level keys present: {sorted(data.keys())}\n"
+            f"# VERIFY: app_json keys present: {sorted(app_json.keys()) if app_json else '(empty)'}"
+        )
+
+    if action_filter:
+        actions = [
+            a for a in actions
+            if action_filter in (a.get("action") or "").lower()
+            or action_filter in (a.get("identifier") or "").lower()
+        ]
+    if not actions:
+        return f"No action matching '{action_filter}' found in app {app_id}."
+
+    app_name = data.get("name", f"app_{app_id}")
+    lines = [f"Action Schema — {app_name} (app_id={app_id}):"]
+
+    for action in actions[:20]:
+        label = action.get("action") or action.get("identifier") or "?"
+        a_type = action.get("type", "unknown")
+        read_only = action.get("read_only", "?")
+        lines.append(f"\n  ── {label} (type={a_type}, read_only={read_only}) ──")
+
+        # VERIFY: 'parameters' is a dict on 8.5 (keys = param names)
+        # or a list [{name, data_type, ...}] — handle both
+        params_raw = action.get("parameters") or {}
+        if isinstance(params_raw, dict):
+            if params_raw:
+                lines.append("    Parameters:")
+                for p_name, p_info in params_raw.items():
+                    if not isinstance(p_info, dict):
+                        continue
+                    req = "required" if p_info.get("required") else "optional"
+                    dtype = p_info.get("data_type", "string")
+                    contains = p_info.get("contains") or []
+                    c_str = f"  [contains: {', '.join(contains)}]" if contains else ""
+                    lines.append(f"      {p_name} ({dtype}, {req}){c_str}")
+            else:
+                lines.append("    Parameters: (none)")
+        elif isinstance(params_raw, list):
+            lines.append("    Parameters:")
+            for p in params_raw:
+                p_name = p.get("name") or p.get("data_item_name") or "?"
+                req = "required" if p.get("required") else "optional"
+                dtype = p.get("data_type", "string")
+                contains = p.get("contains") or []
+                c_str = f"  [contains: {', '.join(contains)}]" if contains else ""
+                lines.append(f"      {p_name} ({dtype}, {req}){c_str}")
+
+        outputs = action.get("output") or []
+        if outputs:
+            lines.append("    Output datapaths:")
+            for o in outputs[:20]:
+                dp = o.get("data_path", "?")
+                dtype = o.get("data_type", "?")
+                contains = o.get("contains") or []
+                c_str = f"  [contains: {', '.join(contains)}]" if contains else ""
+                lines.append(f"      {dp} ({dtype}){c_str}")
+        else:
+            lines.append("    Output datapaths: (none)")
+
+    return "\n".join(lines)
+
+
 def tool_list_assets(client: SoarApiClient, config: McpServerConfig, args: dict) -> str:
     """List configured SOAR assets (connector instances)."""
     app_id_raw = args.get("app_id")
@@ -1268,6 +1418,7 @@ _TOOL_HANDLERS = {
     # Playbook-Discovery & Build tools (v1.6.0+)
     "list_apps": tool_list_apps,
     "list_assets": tool_list_assets,
+    "get_action_schema": tool_get_action_schema,
 }
 
 
