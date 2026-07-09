@@ -50,6 +50,7 @@ ALL_TOOLS: list[str] = [
     "list_assets",
     "get_action_schema",
     "export_playbook",
+    "import_playbook",
 ]
 
 READ_ONLY_TOOLS: frozenset[str] = frozenset(

@@ -212,6 +212,13 @@
             "default": true,
             "required": false,
             "order": 53
+        },
+        "tool_import_playbook": {
+            "description": "WRITE \u26a0\ufe0f \u2014 import_playbook: Import a base64-encoded gzip TAR playbook archive into SOAR so it appears and is editable in the VPE. Enable only after verifying the export\u2192import round-trip.",
+            "data_type": "boolean",
+            "default": false,
+            "required": false,
+            "order": 60
         }
     },
     "actions": [
