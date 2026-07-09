@@ -664,6 +664,36 @@ TOOL_SCHEMAS: dict[str, dict] = {
             "required": ["archive_b64"],
         },
     },
+    "create_container": {
+        "description": (
+            "Create a labeled SOAR container (case) for isolated playbook self-testing. "
+            "The container is tagged with the supplied label so it can be identified and "
+            "cleaned up after testing. Never use this against real case queues. "
+            "WRITE operation — disabled by default. Also requires enable_test_harness = true "
+            "in [safety] of mcp.conf as an additional safety gate."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "Container name (e.g. 'test_url_rep_2026-07-09').",
+                },
+                "label": {
+                    "type": "string",
+                    "description": "Container label/type (default: 'test'). Use a dedicated test label to keep test cases separate.",
+                    "default": "test",
+                },
+                "severity": {
+                    "type": "string",
+                    "description": "Severity level (default: 'low').",
+                    "enum": ["high", "medium", "low", "informational"],
+                    "default": "low",
+                },
+            },
+            "required": ["name"],
+        },
+    },
 }
 
 
@@ -1244,6 +1274,53 @@ def tool_create_artifact(client: SoarApiClient, config: McpServerConfig, args: d
 # ==============================================================================
 
 
+def tool_create_container(client: SoarApiClient, config: McpServerConfig, args: dict) -> str:
+    """Create an isolated test container for playbook self-testing."""
+    # Double gate: tool enable flag (from asset config) AND safety flag in mcp.conf
+    if not getattr(config, "enable_test_harness", False):
+        return (
+            "Error: create_container also requires enable_test_harness = true in the "
+            "[safety] section of mcp.conf. This prevents accidental case creation in "
+            "production SOAR instances. Set it to true only on test/dev instances."
+        )
+
+    name = (args.get("name") or "").strip()
+    if not name:
+        return "Error: name is required."
+
+    label = (args.get("label") or "test").strip()
+    severity = (args.get("severity") or "low").strip().lower()
+    if severity not in _VALID_SEVERITIES:
+        severity = "low"
+
+    body = {
+        "name": name,
+        "label": label,
+        "severity": severity,
+        "status": "new",
+    }
+
+    data, err = client.post("container", body)
+    if err:
+        return f"Error creating container: {err}"
+
+    if not isinstance(data, dict):
+        return f"Container create response (raw): {data}"
+
+    # VERIFY: response field 'id' on SOAR 8.5 (standard REST create response)
+    container_id = data.get("id") or data.get("container_id") or "unknown"
+    failed = data.get("failed", False)
+    if failed:
+        return f"Error: SOAR reported failed=true. Response: {data}"
+
+    return (
+        f"✅ Test container created.\n"
+        f"  Container ID: {container_id}\n"
+        f"  Name: {name}\n"
+        f"  Label: {label} | Severity: {severity}"
+    ) + (_disclaimer() if config.advisory_disclaimer else "")
+
+
 def tool_import_playbook(client: SoarApiClient, config: McpServerConfig, args: dict) -> str:
     """Import a playbook archive into SOAR (POST /rest/import_playbook)."""
     import base64 as _b64
@@ -1559,6 +1636,7 @@ _TOOL_HANDLERS = {
     "export_playbook": tool_export_playbook,
     # Write tools (v1.6.0+)
     "import_playbook": tool_import_playbook,
+    "create_container": tool_create_container,
 }
 
 

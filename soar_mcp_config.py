@@ -51,6 +51,7 @@ ALL_TOOLS: list[str] = [
     "get_action_schema",
     "export_playbook",
     "import_playbook",
+    "create_container",
 ]
 
 READ_ONLY_TOOLS: frozenset[str] = frozenset(
@@ -101,6 +102,8 @@ class McpServerConfig:
     allowed_labels: list[str] = field(default_factory=list)
     max_items_per_case: int = 20
     min_severity: str = ""
+    # Extra gate for create_container — prevents accidental case creation in production
+    enable_test_harness: bool = False
 
     # AI instructions — sent to the LLM in every MCP initialize response
     ai_instructions: str = ""
@@ -222,6 +225,7 @@ class McpConfigLoader:
 
         raw_sev = parser.get("safety", "min_severity", fallback="").strip().lower()
         config.min_severity = raw_sev if raw_sev in _VALID_SEVERITIES else ""
+        config.enable_test_harness = self._get_bool(parser, "safety", "enable_test_harness", False)
 
         # ── [server] ai_instructions ───────────────────────────────────────────
         config.ai_instructions = parser.get("server", "ai_instructions", fallback="").strip()
