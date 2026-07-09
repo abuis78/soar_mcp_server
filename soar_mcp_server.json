@@ -184,6 +184,13 @@
             "default": false,
             "required": false,
             "order": 41
+        },
+        "tool_list_apps": {
+            "description": "READ \u2014 list_apps: List installed SOAR apps/connectors (name, vendor, supported actions). Used by the playbook-builder skill for connector discovery.",
+            "data_type": "boolean",
+            "default": true,
+            "required": false,
+            "order": 50
         }
     },
     "actions": [

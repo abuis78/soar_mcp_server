@@ -45,6 +45,8 @@ ALL_TOOLS: list[str] = [
     "update_case_severity",
     "update_case_owner",
     "create_artifact",
+    # Playbook-Discovery & Build (v1.6.0+)
+    "list_apps",
 ]
 
 READ_ONLY_TOOLS: frozenset[str] = frozenset(
@@ -60,6 +62,8 @@ READ_ONLY_TOOLS: frozenset[str] = frozenset(
         "list_action_runs",
         "list_users",
         "get_soar_info",
+        # Playbook-Discovery & Build read tools (v1.6.0+)
+        "list_apps",
     ]
 )
 

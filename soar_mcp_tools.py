@@ -529,6 +529,28 @@ TOOL_SCHEMAS: dict[str, dict] = {
             "required": ["case_id", "name", "artifact_type"],
         },
     },
+    # ── Playbook-Discovery & Build tools (v1.6.0+) ────────────────────────────
+    "list_apps": {
+        "description": (
+            "List installed SOAR apps/connectors. "
+            "Returns app ID, name, publisher, product name, and supported action names. "
+            "Use this to discover which connectors are available before building a playbook."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "name_contains": {
+                    "type": "string",
+                    "description": "Optional substring filter applied client-side to app name or product name (case-insensitive).",
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Maximum number of results (default: 50).",
+                    "default": 50,
+                },
+            },
+        },
+    },
 }
 
 
@@ -1105,6 +1127,53 @@ def tool_create_artifact(client: SoarApiClient, config: McpServerConfig, args: d
 
 
 # ==============================================================================
+# Playbook-Discovery & Build tool implementations (v1.6.0+)
+# ==============================================================================
+
+
+def tool_list_apps(client: SoarApiClient, config: McpServerConfig, args: dict) -> str:
+    """List installed SOAR apps/connectors."""
+    name_filter = (args.get("name_contains") or "").strip().lower()
+    limit = min(int(args.get("limit") or config.max_results), config.max_results)
+
+    data, err = client.get("app", params={"page_size": 0})
+    if err:
+        return f"Error listing apps: {err}"
+
+    # VERIFY: 'data' array field name on SOAR 8.5 (expected from REST reference)
+    apps = data.get("data", []) if isinstance(data, dict) else []
+    total = data.get("count", len(apps)) if isinstance(data, dict) else len(apps)
+
+    if name_filter:
+        apps = [
+            a for a in apps
+            if name_filter in (a.get("name") or "").lower()
+            or name_filter in (a.get("product_name") or "").lower()
+        ]
+
+    apps = apps[:limit]
+    if not apps:
+        return f"No apps found{' matching ' + repr(name_filter) if name_filter else ''}."
+
+    lines = [f"Installed SOAR Apps ({len(apps)} shown, {total} total):"]
+    for a in apps:
+        # VERIFY: 'supported_actions' field name on SOAR 8.5
+        supported = a.get("supported_actions") or []
+        actions_str = (
+            f"{len(supported)} action(s): {', '.join(supported[:5])}"
+            + (" …" if len(supported) > 5 else "")
+            if supported else "actions unknown (call get_action_schema)"
+        )
+        lines.append(
+            f"\n  ID: {a.get('id')} | {a.get('name', '(unnamed)')}\n"
+            f"    Vendor: {a.get('product_vendor') or a.get('publisher') or 'unknown'} | "
+            f"Product: {a.get('product_name', 'unknown')}\n"
+            f"    {actions_str}"
+        )
+    return "\n".join(lines)
+
+
+# ==============================================================================
 # Dispatcher
 # ==============================================================================
 
@@ -1127,6 +1196,8 @@ _TOOL_HANDLERS = {
     "update_case_severity": tool_update_case_severity,
     "update_case_owner": tool_update_case_owner,
     "create_artifact": tool_create_artifact,
+    # Playbook-Discovery & Build tools (v1.6.0+)
+    "list_apps": tool_list_apps,
 }
 
 
