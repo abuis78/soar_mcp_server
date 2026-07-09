@@ -108,6 +108,29 @@ class SoarApiClient:
         except Exception as e:
             return None, f"Unexpected error: {type(e).__name__}"
 
+    def get_binary(self, path: str, params: dict | None = None) -> tuple[bytes | None, str | None]:
+        """GET request returning raw bytes (for binary endpoints like playbook export)."""
+        url = f"{self._base_url}/rest/{path.lstrip('/')}"
+        try:
+            resp = self._session.get(url, params=params, timeout=self._config.timeout)
+            if resp.status_code == 401:
+                return None, "Authentication failed (HTTP 401). Check ph-auth-token."
+            if resp.status_code == 403:
+                return None, "Access denied (HTTP 403). Token may lack required permissions."
+            if resp.status_code == 404:
+                return None, "Resource not found (HTTP 404)."
+            if resp.status_code >= 400:
+                return None, f"SOAR API error HTTP {resp.status_code}: {resp.text[:200]}"
+            return resp.content, None
+        except requests.exceptions.Timeout:
+            return None, f"SOAR REST API timed out after {self._config.timeout}s"
+        except requests.exceptions.SSLError as e:
+            return None, f"SSL error: {e}"
+        except requests.exceptions.ConnectionError as e:
+            return None, f"Connection error: {e}"
+        except Exception as e:
+            return None, f"Unexpected error: {type(e).__name__}"
+
     def _handle_response(self, resp: requests.Response) -> tuple[Any, str | None]:
         if resp.status_code == 401:
             return None, "Authentication failed (HTTP 401). Check ph-auth-token in the MCP client config."
@@ -593,6 +616,24 @@ TOOL_SCHEMAS: dict[str, dict] = {
                     "description": "Filter to actions matching this name substring (case-insensitive). If app_id is omitted, also used to search for the app.",
                 },
             },
+        },
+    },
+    "export_playbook": {
+        "description": (
+            "Export a SOAR playbook as a base64-encoded gzip TAR archive (.tgz). "
+            "The archive contains the playbook's blockly graph, which is the structural "
+            "ground-truth used by the Visual Playbook Editor (VPE) and the playbook-builder skill. "
+            "Use a known-good playbook as a golden template before generating a new one."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "playbook_id": {
+                    "type": "integer",
+                    "description": "Numeric SOAR playbook ID (from list_playbooks).",
+                },
+            },
+            "required": ["playbook_id"],
         },
     },
 }
@@ -1175,6 +1216,30 @@ def tool_create_artifact(client: SoarApiClient, config: McpServerConfig, args: d
 # ==============================================================================
 
 
+def tool_export_playbook(client: SoarApiClient, config: McpServerConfig, args: dict) -> str:
+    """Export a playbook as a base64-encoded gzip TAR archive."""
+    import base64 as _b64
+
+    pb_id, err_msg = _require_positive_int(args.get("playbook_id"), "playbook_id")
+    if err_msg:
+        return err_msg
+
+    # VERIFY: GET /rest/playbook/{id}/export returns x-gzip binary on SOAR 8.5
+    # (confirmed in SOAR REST reference for 8.x and Appendix A of the instruction)
+    content, err = client.get_binary(f"playbook/{pb_id}/export")
+    if err:
+        return f"Error exporting playbook {pb_id}: {err}"
+
+    if not content:
+        return f"Error: empty response for playbook {pb_id} export."
+
+    encoded = _b64.b64encode(content).decode("ascii")
+    return (
+        f"Playbook #{pb_id} exported ({len(content):,} bytes).\n"
+        f"archive_b64: {encoded}"
+    )
+
+
 def tool_get_action_schema(client: SoarApiClient, config: McpServerConfig, args: dict) -> str:
     """Return input parameters and output datapaths for actions of a SOAR app."""
     app_id_raw = args.get("app_id")
@@ -1419,6 +1484,7 @@ _TOOL_HANDLERS = {
     "list_apps": tool_list_apps,
     "list_assets": tool_list_assets,
     "get_action_schema": tool_get_action_schema,
+    "export_playbook": tool_export_playbook,
 }
 
 

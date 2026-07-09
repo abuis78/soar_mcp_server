@@ -205,6 +205,13 @@
             "default": true,
             "required": false,
             "order": 52
+        },
+        "tool_export_playbook": {
+            "description": "READ \u2014 export_playbook: Export a playbook as a base64-encoded gzip TAR (.tgz). Returns the blockly graph structure as a golden template for the playbook-builder skill.",
+            "data_type": "boolean",
+            "default": true,
+            "required": false,
+            "order": 53
         }
     },
     "actions": [

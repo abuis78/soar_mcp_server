@@ -49,6 +49,7 @@ ALL_TOOLS: list[str] = [
     "list_apps",
     "list_assets",
     "get_action_schema",
+    "export_playbook",
 ]
 
 READ_ONLY_TOOLS: frozenset[str] = frozenset(
@@ -68,6 +69,7 @@ READ_ONLY_TOOLS: frozenset[str] = frozenset(
         "list_apps",
         "list_assets",
         "get_action_schema",
+        "export_playbook",
     ]
 )
 
