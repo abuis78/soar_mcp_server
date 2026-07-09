@@ -60,6 +60,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional, Sequence
 
+from soar_mcp_utils import redact_nested
+
 logger = logging.getLogger(__name__)
 
 _TOKEN_PREFIX = "soarmcp_"
@@ -130,20 +132,12 @@ def _const_time_eq(a: str, b: str) -> bool:
     return hmac.compare_digest(a.encode("utf-8"), b.encode("utf-8"))
 
 
-def sanitise_args_for_audit(args) -> dict:
-    """Strip likely-sensitive fields from tool arguments before audit logging."""
-    if not isinstance(args, dict):
-        return {"_value": str(args)[:200]}
-    sensitive_keys = {"token", "password", "secret", "api_key", "auth"}
-    out = {}
-    for k, v in args.items():
-        if any(s in k.lower() for s in sensitive_keys):
-            out[k] = "<redacted>"
-        elif isinstance(v, str) and len(v) > 200:
-            out[k] = v[:200] + "...<truncated>"
-        else:
-            out[k] = v
-    return out
+def sanitise_args_for_audit(args: dict) -> dict:
+    """Return a copy of args safe for audit logging: sensitive values redacted, strings truncated."""
+    try:
+        return redact_nested(args)
+    except Exception:
+        return {"_redaction_error": "sanitisation failed"}
 
 
 # ── Rate limiter (in-process, sliding 60s window) ──────────────────────────────

@@ -31,6 +31,7 @@ if _app_dir not in sys.path:
 
 from soar_mcp_config import McpServerConfig, get_config
 from soar_mcp_tools import TOOL_SCHEMAS, SoarApiClient, call_tool
+from soar_mcp_utils import redact_nested
 
 try:
     from soar_mcp_tokens import TokenStore, TokenVerification, sanitise_args_for_audit
@@ -38,8 +39,12 @@ except Exception:  # noqa: BLE001
     TokenStore = None  # type: ignore[misc,assignment]
     TokenVerification = None  # type: ignore[misc,assignment]
 
-    def sanitise_args_for_audit(args):  # type: ignore[no-redef]
-        return args
+    def sanitise_args_for_audit(args: dict) -> dict:  # type: ignore[no-redef]
+        """Return a copy of args safe for audit logging: sensitive values redacted, strings truncated."""
+        try:
+            return redact_nested(args)
+        except Exception:
+            return {"_redaction_error": "sanitisation failed"}
 
 logger = logging.getLogger(__name__)
 audit_logger = logging.getLogger("soar_mcp.audit")
