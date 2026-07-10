@@ -57,7 +57,7 @@ logger = logging.getLogger(__name__)
 _SEVERITY_ORDER = {"high": 4, "medium": 3, "low": 2, "informational": 1, "": 0}
 
 # ── SOAR status labels ─────────────────────────────────────────────────────────
-_VALID_STATUSES = {"open", "closed", "resolved", "new"}
+_VALID_STATUSES = {"open", "closed", "resolved", "new", "in_progress"}
 _VALID_SEVERITIES = {"high", "medium", "low", "informational"}
 
 
@@ -1482,7 +1482,8 @@ def tool_add_case_note(client: SoarApiClient, config: McpServerConfig, args: dic
         "note_type": "general",
         "note_format": "markdown",
         "phase_id": 0,
-        "title": (args.get("title") or "AI-Assisted Analysis Note").strip(),
+        # Strip HTML from the title too (issue #42) — it is rendered in the UI.
+        "title": _HTML_TAG_RE.sub("", (args.get("title") or "AI-Assisted Analysis Note").strip()),
     }
     data, err = client.post("note", body)
     if err:
@@ -1598,10 +1599,22 @@ def tool_create_artifact(client: SoarApiClient, config: McpServerConfig, args: d
     if not isinstance(cef_data, dict):
         cef_data = {}
 
+    # Security (issue #42): strip HTML from all client-controlled fields that are
+    # rendered in the SOAR web UI. SOAR's CSP contains 'unsafe-inline', so an
+    # injected <script>/<img onerror> in an artifact name or CEF value would
+    # execute in an analyst's browser (stored XSS) — same hardening as add_case_note.
+    name = _HTML_TAG_RE.sub("", name)
+    art_type = _HTML_TAG_RE.sub("", art_type)
+    label = _HTML_TAG_RE.sub("", str(args.get("label", "artifact")))
+    cef_data = {
+        _HTML_TAG_RE.sub("", str(k)): (_HTML_TAG_RE.sub("", v) if isinstance(v, str) else v)
+        for k, v in cef_data.items()
+    }
+
     body = {
         "container_id": case_id,
         "name": name,
-        "label": args.get("label", "artifact"),
+        "label": label,
         "type": art_type,
         "cef": cef_data,
         "source_data_identifier": f"mcp_created_{name}",
@@ -1628,9 +1641,12 @@ def tool_create_container(client: SoarApiClient, config: McpServerConfig, args: 
     # Double gate: tool enable flag (from asset config) AND safety flag in mcp.conf
     if not getattr(config, "enable_test_harness", False):
         return (
-            "Error: create_container also requires enable_test_harness = true in the "
-            "[safety] section of mcp.conf. This prevents accidental case creation in "
-            "production SOAR instances. Set it to true only on test/dev instances."
+            "Error: create_container requires the test harness to be enabled. "
+            "Enable it via the 'enable_test_harness' checkbox in the asset "
+            "configuration (Apps → SOAR MCP Server → Asset Settings) and run "
+            "Test Connectivity — no SSH needed. (Equivalent to enable_test_harness "
+            "= true in the [safety] section of mcp.conf.) This prevents accidental "
+            "case creation on production SOAR instances; enable only on test/dev."
         )
 
     name = (args.get("name") or "").strip()
