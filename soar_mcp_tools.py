@@ -145,7 +145,9 @@ class SoarApiClient:
             if resp.status_code == 404:
                 return None, "Resource not found (HTTP 404)."
             if resp.status_code >= 400:
-                return None, f"SOAR API error HTTP {resp.status_code}: {resp.text[:200]}"
+                # Do not echo the raw SOAR response body to the client (#57).
+                logger.info("[MCP] get_binary HTTP %s body=%s", resp.status_code, resp.text[:200])
+                return None, f"SOAR API error (HTTP {resp.status_code})."
             return resp.content, None
         except requests.exceptions.Timeout:
             return None, f"SOAR REST API timed out after {self._config.timeout}s"

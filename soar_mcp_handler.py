@@ -84,9 +84,10 @@ class SoarMcpRestHandler(dict):
         try:
             response = self._process(request, path_args or [])
         except Exception as exc:
+            # Detail is logged server-side only; never echoed to the client (#57).
             logger.exception("[SOAR MCP] Fatal error in __init__: %s", exc)
             response = self._error(None, _JSONRPC_INTERNAL_ERROR,
-                                   f"MCP handler error: {exc}")
+                                   "Internal MCP handler error.")
         self.update(response)
 
     # ── Request processing ─────────────────────────────────────────────────────
@@ -151,7 +152,8 @@ class SoarMcpRestHandler(dict):
         try:
             rpc = json.loads(body_bytes)
         except (json.JSONDecodeError, TypeError) as exc:
-            return self._error(None, _JSONRPC_PARSE_ERROR, f"Invalid JSON: {exc}")
+            logger.info("[SOAR MCP] JSON parse error: %s", exc)
+            return self._error(None, _JSONRPC_PARSE_ERROR, "Invalid JSON in request body.")
 
         if not isinstance(rpc, dict):
             return self._error(None, _JSONRPC_INVALID_REQUEST, "Request must be a JSON object")
