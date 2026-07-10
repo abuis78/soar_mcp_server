@@ -4,6 +4,7 @@ SOAR MCP Server — Uber View (Case Widget)
 Copyright 2026 Andreas Buis
 """
 
+import html as _html
 import json
 import os
 import traceback as _tb
@@ -48,9 +49,6 @@ def display_uber_view(provides, all_app_runs, context):
             or _extract_asset_name_from_runs(all_app_runs)
             or _extract_asset_name_from_request(context)
         )
-        # Write debug info so we can see what SOAR passes
-        _write_provides_debug(provides, asset_name, context)
-
         # ── 4. Build endpoint — always fresh from soar_base + asset_name ──────
         # Never use the stored mcp_endpoint from overrides because the
         # connector may have written it before the base_url was known.
@@ -64,14 +62,16 @@ def display_uber_view(provides, all_app_runs, context):
             endpoint = f"https://YOUR_SOAR_HOST/rest/handler/{_HANDLER_DIR}/YOUR_ASSET_NAME"
 
         # ── 5. Auth token ─────────────────────────────────────────────────────
-        auth_token = (
-            overrides.get("auth_token")
-            or data.get("auth_token")
-            or "YOUR_SOAR_AUTH_TOKEN"
-        )
+        # Security: NEVER render the live SOAR ph-auth-token into the widget.
+        # It is a full-access credential; embedding it in the DOM exposes it to
+        # anyone with widget access (screenshots, browser history, shoulder
+        # surfing). Always emit a placeholder — the analyst pastes their token.
+        auth_token = "YOUR_SOAR_AUTH_TOKEN"
 
         # ── 6. Has live data? ─────────────────────────────────────────────────
-        has_data = bool(soar_base and asset_name and auth_token != "YOUR_SOAR_AUTH_TOKEN")
+        # Endpoint is "live" once base_url + asset_name are known; the token is
+        # deliberately not part of this check anymore.
+        has_data = bool(soar_base and asset_name)
 
         enabled = list(data.get("enabled_tools", _DEFAULT_ENABLED))
         disabled = list(data.get("disabled_tools",
@@ -107,8 +107,11 @@ def display_uber_view(provides, all_app_runs, context):
                 "off":   ("background:#1a1c20;color:#444850;border:1px solid #2e3138;",),
             }
             st = colors[kind][0]
+            # HTML-escape the tool name — it is rendered via `| safe` in the
+            # template, so defend against any non-allowlisted value reaching here.
+            safe_t = _html.escape(str(t))
             return ('<span style="font-family:monospace;font-size:10px;padding:2px 7px;'
-                    'border-radius:3px;' + st + '">' + t + '</span>')
+                    'border-radius:3px;' + st + '">' + safe_t + '</span>')
 
         enabled_pills = " ".join(
             pill(t, "write" if t in _WRITE_TOOLS else "read")
@@ -145,10 +148,6 @@ def display_uber_view(provides, all_app_runs, context):
 
     except Exception:
         err = _tb.format_exc()
-        try:
-            open("/tmp/mcp_uber_err.txt", "w").write(err)
-        except Exception:
-            pass
         context.update({
             "error_html": (
                 '<div style="background:#1a0000;border:1px solid #600;border-radius:4px;'
@@ -167,28 +166,6 @@ def display_uber_view(provides, all_app_runs, context):
         })
 
     return "soar_mcp_uber_view.html"
-
-
-def _write_provides_debug(provides, resolved_name: str, context) -> None:
-    """Write debug info to /tmp so the asset_name source can be diagnosed."""
-    try:
-        req = context.get("request")
-        path = getattr(req, "path", "") if req else ""
-        meta_keys = sorted([k for k in (getattr(req, "META", {}) or {}) if any(
-            x in k for x in ("HOST", "PATH", "FORWARD", "USER", "ASSET"))]) if req else []
-        with open("/tmp/mcp_asset_debug.txt", "w") as f:
-            f.write(f"provides type: {type(provides)}\n")
-            f.write(f"provides repr: {repr(provides)}\n")
-            f.write(f"resolved asset_name: {resolved_name}\n")
-            f.write(f"request.path: {path}\n")
-            f.write(f"META keys (filtered): {meta_keys}\n")
-            # Try to show dir() of provides for unknown types
-            try:
-                f.write(f"provides dir: {[x for x in dir(provides) if not x.startswith('__')]}\n")
-            except Exception:
-                pass
-    except Exception:
-        pass
 
 
 def _extract_asset_name_from_runs(all_app_runs) -> str:
@@ -258,20 +235,15 @@ def _extract_asset_name_from_request(context) -> str:
 def _get_base_url(context):
     """
     Try every known method to get the SOAR base URL, in order of preference.
-    Writes debug info to /tmp/mcp_base_url_debug.txt on the first call.
     """
-    attempts = []
-
     # 1. SOAR's own helper (most reliable)
     try:
         import phantom.rest as _pr
         url = _pr.get_phantom_base_url()
         if url:
-            attempts.append(("phantom.rest", url))
-            _write_debug(attempts)
             return url.rstrip("/")
-    except Exception as e:
-        attempts.append(("phantom.rest", "err: " + str(e)))
+    except Exception:
+        pass
 
     req = context.get("request")
     if req:
@@ -279,11 +251,9 @@ def _get_base_url(context):
         try:
             url = req.build_absolute_uri("/").rstrip("/")
             if url and "YOUR_SOAR" not in url:
-                attempts.append(("build_absolute_uri", url))
-                _write_debug(attempts)
                 return url
-        except Exception as e:
-            attempts.append(("build_absolute_uri", "err: " + str(e)))
+        except Exception:
+            pass
 
         # 3. Forwarded host header (set by reverse proxy)
         try:
@@ -291,43 +261,20 @@ def _get_base_url(context):
             fwd = meta.get("HTTP_X_FORWARDED_HOST") or meta.get("HTTP_X_FORWARDED_SERVER")
             proto = meta.get("HTTP_X_FORWARDED_PROTO", "https")
             if fwd:
-                url = proto + "://" + fwd
-                attempts.append(("x-forwarded-host", url))
-                _write_debug(attempts)
-                return url
-        except Exception as e:
-            attempts.append(("x-forwarded-host", "err: " + str(e)))
+                return proto + "://" + fwd
+        except Exception:
+            pass
 
         # 4. Standard Django HOST header
         try:
             host = req.get_host()
             scheme = getattr(req, "scheme", "https")
-            url = scheme + "://" + host
             if host:
-                attempts.append(("get_host", url))
-                _write_debug(attempts)
-                return url
-        except Exception as e:
-            attempts.append(("get_host", "err: " + str(e)))
-
-        # 5. Dump META keys for debugging
-        try:
-            meta = getattr(req, "META", {})
-            attempts.append(("META_keys", str(sorted([k for k in meta if "HOST" in k or "SERVER" in k or "FORWARD" in k]))))
+                return scheme + "://" + host
         except Exception:
             pass
 
-    _write_debug(attempts)
     return ""
-
-
-def _write_debug(info):
-    try:
-        with open("/tmp/mcp_base_url_debug.txt", "w") as f:
-            for k, v in info:
-                f.write(k + ": " + str(v) + "\n")
-    except Exception:
-        pass
 
 
 def _read_asset_overrides() -> dict:
