@@ -146,6 +146,11 @@ class SoarMcpConnector(BaseConnector):
 
         ai_instructions = (asset_cfg.get("ai_instructions") or "").strip()
 
+        # enable_test_harness checkbox — None means "not set in asset config,
+        # fall back to mcp.conf [safety] value".
+        eth_val = asset_cfg.get("enable_test_harness")
+        enable_test_harness = bool(eth_val) if eth_val is not None else None
+
         # Build the correct MCP endpoint URL (base_url is from asset config for
         # test connectivity; the real base_url is also detected by the handler
         # from the incoming request and will overwrite this on first MCP call).
@@ -156,6 +161,7 @@ class SoarMcpConnector(BaseConnector):
         overrides = {
             "tools": tool_overrides,
             "ai_instructions": ai_instructions,
+            "enable_test_harness": enable_test_harness,
             "asset_name": self._asset_name,
             "base_url": self._base_url,
             "auth_token": self._auth_token,

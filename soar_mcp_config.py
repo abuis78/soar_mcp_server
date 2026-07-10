@@ -326,6 +326,11 @@ class McpConfigLoader:
         if ai_instr and isinstance(ai_instr, str):
             config.ai_instructions = ai_instr.strip()
 
+        # Apply enable_test_harness override (None = not set in asset config → keep mcp.conf value)
+        eth = overrides.get("enable_test_harness")
+        if eth is not None:
+            config.enable_test_harness = bool(eth)
+
         # Persist MCP endpoint URL so tools can display it
         mcp_ep = overrides.get("mcp_endpoint")
         if mcp_ep and isinstance(mcp_ep, str):
