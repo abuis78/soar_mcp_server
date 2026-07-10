@@ -23,6 +23,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import textwrap
 from typing import Any, Optional
 
 import requests
@@ -2232,6 +2233,28 @@ def _get_graph(
     return nodes, edges
 
 
+def _extract_python_from_export(client: "SoarApiClient", playbook_id: int) -> Optional[str]:
+    """Return the generated .py payload from a playbook export archive."""
+    import io as _io_py
+    import tarfile as _tarfile_py
+
+    content, _ = client.get_binary(f"playbook/{playbook_id}/export")
+    if not content:
+        return None
+    try:
+        buf = _io_py.BytesIO(content)
+        with _tarfile_py.open(fileobj=buf, mode="r:*") as tarf:
+            for member in tarf.getmembers():
+                if not member.name.endswith(".py"):
+                    continue
+                fobj = tarf.extractfile(member)
+                if fobj:
+                    return fobj.read().decode("utf-8", errors="replace")
+    except Exception:
+        return None
+    return None
+
+
 def _extract_python_from_coa(nodes: list) -> Optional[str]:
     """
     Reconstruct a Python payload from COA userCode blocks.
@@ -2251,8 +2274,88 @@ def _extract_python_from_coa(nodes: list) -> Optional[str]:
             fn_name = (
                 n.get("functionName") or n.get("function_name") or n.get("name") or "block"
             )
-            parts.append(f"# --- {fn_name} ---\n{code}")
+            parts.append(f"# --- {fn_name} ---\n{textwrap.dedent(str(code)).strip()}")
     return "\n\n".join(parts) if parts else None
+
+
+def _extract_python_from_coa_payload(coa_data: dict) -> Optional[str]:
+    """Return full generated Python from known COA envelope fields, if present."""
+    candidates: list[Any] = [
+        coa_data.get("python"),
+        coa_data.get("code"),
+        (coa_data.get("coa") or {}).get("python") if isinstance(coa_data.get("coa"), dict) else None,
+        (coa_data.get("coa") or {}).get("code") if isinstance(coa_data.get("coa"), dict) else None,
+    ]
+    data_sub = (coa_data.get("coa") or {}).get("data") if isinstance(coa_data.get("coa"), dict) else None
+    if not data_sub and isinstance(coa_data.get("data"), dict):
+        data_sub = coa_data.get("data")
+    if isinstance(data_sub, dict):
+        candidates.extend([data_sub.get("python"), data_sub.get("code")])
+    for value in candidates:
+        if isinstance(value, str) and value.strip():
+            return value
+    return None
+
+
+def _select_playbook_python(
+    client: "SoarApiClient",
+    current_id: int,
+    coa_data: dict,
+    rest_data: dict | None,
+    nodes: list,
+) -> tuple[Optional[str], Optional[str]]:
+    """
+    Return the best full Python payload for validation/drift checks.
+
+    Prefer full generated sources (REST/COA/export) over node snippets. Node
+    snippets are a last resort because SOAR may store them indented relative to
+    generated wrapper code, which can false-fail py_compile.
+    """
+    if isinstance(rest_data, dict):
+        for key in ("code", "script", "playbook_run_data", "python"):
+            value = rest_data.get(key)
+            if isinstance(value, str) and value.strip():
+                return value, f"rest_{key}"
+
+    coa_python = _extract_python_from_coa_payload(coa_data)
+    if coa_python:
+        return coa_python, "coa_python"
+
+    export_python = _extract_python_from_export(client, current_id)
+    if export_python:
+        return export_python, "export_archive"
+
+    snippet_python = _extract_python_from_coa(nodes)
+    if snippet_python:
+        return snippet_python, "coa_usercode_snippets"
+
+    return None, None
+
+
+def _collect_coa_owned_function_names(nodes: list) -> set[str]:
+    """Collect generated function names that are owned by the COA graph."""
+    import ast as _ast_owned
+
+    names: set[str] = {"on_start", "on_finish"}
+    for n in nodes:
+        if not isinstance(n, dict):
+            continue
+        fn_name = n.get("functionName") or n.get("function_name") or n.get("name")
+        if fn_name:
+            fn = str(fn_name)
+            names.add(fn)
+            names.add(f"{fn}_callback")
+        code = n.get("userCode") or n.get("user_code") or n.get("code") or ""
+        if code:
+            try:
+                tree = _ast_owned.parse(textwrap.dedent(str(code)))
+                for node_obj in _ast_owned.walk(tree):
+                    if isinstance(node_obj, _ast_owned.FunctionDef):
+                        names.add(node_obj.name)
+                        names.add(f"{node_obj.name}_callback")
+            except SyntaxError:
+                pass
+    return names
 
 
 def _normalize_coa_volatile(data: object, _depth: int = 0) -> object:
@@ -2755,40 +2858,23 @@ def tool_check_saved_generated_python_drift(
         errors.append({"source": "coa", "message": err})
 
     nodes, _ = _get_graph(client, current_id, coa_data)
+    coa_functions = _collect_coa_owned_function_names(nodes)
 
-    # Collect COA userCode blocks from code-type nodes
-    # VERIFY: field name "userCode" inside a code node — may be "user_code" or "code"
-    coa_functions: set[str] = set()
-    for n in nodes:
-        if (n.get("type") or "").lower() == "code":
-            user_code = n.get("userCode") or n.get("user_code") or n.get("code") or ""
-            if user_code:
-                try:
-                    tree = _ast.parse(user_code)
-                    for node_obj in _ast.walk(tree):
-                        if isinstance(node_obj, _ast.FunctionDef):
-                            coa_functions.add(node_obj.name)
-                except SyntaxError:
-                    pass
-
-    # Fetch saved Python payload from REST
-    # VERIFY: field name for saved Python in /rest/playbook/{id} — may be "code", "script", or "playbook_run_data"
     rest_data, rest_err = client.get(f"playbook/{current_id}")
-    saved_python: Optional[str] = None
-    python_payload_available = False
-    if isinstance(rest_data, dict):
-        saved_python = (
-            rest_data.get("code")
-            or rest_data.get("script")
-            or rest_data.get("playbook_run_data")
-        )
-        if saved_python:
-            python_payload_available = True
+    if rest_err:
+        errors.append({"source": "rest", "message": rest_err})
+    saved_python, python_source = _select_playbook_python(
+        client,
+        current_id,
+        coa_data,
+        rest_data if isinstance(rest_data, dict) else {},
+        nodes,
+    )
 
-    if not python_payload_available:
+    if not saved_python:
         result = {
-            "ok": True,
-            "summary": "Python payload not available in REST response — check skipped.",
+            "ok": False,
+            "summary": "Python payload not available from REST, COA, or export archive — check skipped.",
             "data": {
                 "current_id": current_id,
                 "drift_detected": False,
@@ -2799,9 +2885,13 @@ def tool_check_saved_generated_python_drift(
                 "saved_python_functions": [],
                 "external_helper_candidates": [],
                 "status": "skipped",
-                "skip_reason": "saved Python payload not found in /rest/playbook response — VERIFY field name",  # noqa
+                "skip_reason": "saved Python payload not found in REST, COA, or export archive",
             },
-            "findings": [],
+            "findings": [{
+                "severity": "warn",
+                "code": "python_payload_unavailable",
+                "message": "Could not inspect generated Python; drift status is unknown.",
+            }],
             "errors": errors,
         }
         return json.dumps(result, indent=2)
@@ -2825,6 +2915,7 @@ def tool_check_saved_generated_python_drift(
                 "drift_detected": False,
                 "method": "fallback_unavailable",
                 "python_payload_available": True,
+                "python_source": python_source,
                 "ast_parse_succeeded": False,
                 "coa_defined_functions": sorted(coa_functions),
                 "saved_python_functions": [],
@@ -2862,6 +2953,7 @@ def tool_check_saved_generated_python_drift(
             "drift_detected": drift_detected,
             "method": "static_usercode_analysis",
             "python_payload_available": True,
+            "python_source": python_source,
             "ast_parse_succeeded": ast_ok,
             "coa_defined_functions": sorted(coa_functions),
             "saved_python_functions": sorted(saved_functions),
@@ -3179,41 +3271,10 @@ def tool_validate_playbook_bundle(
 
     checks: list[dict] = []
 
-    # Check 1 — SOAR structure validation endpoint
-    # SOAR 8.5 confirmed: /rest/playbook/{id}/validate does not exist → HTTP 400/404.
-    # passed_validation (check 2) serves as the structure signal on 8.5.
-    val_data, val_err = client.get(f"playbook/{current_id}/validate")
-    if val_err and ("404" in str(val_err) or "400" in str(val_err)):
-        checks.append({
-            "name": "validate_structure",
-            "status": "skipped",
-            "message": (
-                "SOAR 8.5: no dedicated /rest/playbook/{id}/validate endpoint "
-                "(HTTP 400/404). Use passed_validation flag (check 2) as structure signal."
-            ),
-            "details": {},
-        })
-    elif val_err:
-        checks.append({
-            "name": "validate_structure",
-            "status": "skipped",
-            "message": f"Validation endpoint error: {val_err}",
-            "details": {},
-        })
-    else:
-        # VERIFY: success signal in validation endpoint response
-        val_passed = (
-            val_data.get("success", True)
-            if isinstance(val_data, dict) else True
-        )
-        checks.append({
-            "name": "validate_structure",
-            "status": "passed" if val_passed else "failed",
-            "message": (val_data.get("message", "") if isinstance(val_data, dict) else ""),
-            "details": val_data if isinstance(val_data, dict) else {},
-        })
-
-    # Check 2 — REST passed_validation flag
+    # Check 1 — REST passed_validation flag.
+    # SOAR 8.5 has no /rest/playbook/{id}/validate endpoint; do not probe it,
+    # because that creates noisy server-side errors. The native flag is the
+    # structure signal for this SOAR generation.
     rest_data, rest_err = client.get(f"playbook/{current_id}")
     if rest_err or not isinstance(rest_data, dict):
         checks.append({
@@ -3231,7 +3292,7 @@ def tool_validate_playbook_bundle(
             "details": {},
         })
 
-    # Check 3 — COA node warnings
+    # Check 2 — COA node warnings
     nodes, _ = _get_graph(client, current_id, coa_data)
     w_count = sum(
         1 for n in nodes
@@ -3244,55 +3305,22 @@ def tool_validate_playbook_bundle(
         "details": {"warning_count": w_count},
     })
 
-    # Check 4 — Python py_compile (AST-only, no execution)
-    # SOAR 8.5: Python is not a REST field.  Priority order:
-    #   1. REST code field (rarely populated, kept for completeness)
-    #   2. COA userCode blocks (code-type nodes only)
-    #   3. Export archive .py file — covers action/decision/utility-only playbooks (#31 fix)
-    import io as _io
-    import tarfile as _tarfile
-
-    saved_python = None
-    python_source = None
-    if isinstance(rest_data, dict):
-        saved_python = (
-            rest_data.get("code")
-            or rest_data.get("script")
-            or rest_data.get("playbook_run_data")
-        )
-        if saved_python:
-            python_source = "rest_field"
-    if not saved_python:
-        saved_python = _extract_python_from_coa(nodes)
-        if saved_python:
-            python_source = "coa_usercode"
-    if not saved_python:
-        # Fetch export archive and extract the SOAR-generated .py file.
-        # SOAR generates Python for all node types (action, decision, utility, code),
-        # so the .py in the archive covers cases where COA has no code-type nodes.
-        export_content, _ = client.get_binary(f"playbook/{current_id}/export")
-        if export_content:
-            try:
-                buf = _io.BytesIO(export_content)
-                with _tarfile.open(fileobj=buf, mode="r:*") as tarf:
-                    for member in tarf.getmembers():
-                        if member.name.endswith(".py"):
-                            fobj = tarf.extractfile(member)
-                            if fobj:
-                                saved_python = fobj.read().decode("utf-8", errors="replace")
-                                python_source = "export_archive"
-                                break
-            except Exception:
-                pass  # archive extraction failed — proceed without compile check
+    # Check 3 — Python py_compile (AST-only, no execution)
+    saved_python, python_source = _select_playbook_python(
+        client,
+        current_id,
+        coa_data,
+        rest_data if isinstance(rest_data, dict) else {},
+        nodes,
+    )
 
     if not saved_python:
         checks.append({
             "name": "python_compile",
             "status": "skipped",
             "message": (
-                "No Python payload found — REST record has no code field, "
-                "COA contains no code-type nodes with userCode, "
-                "and export archive extraction failed or returned no .py file."
+                "No Python payload found in REST, COA, export archive, "
+                "or code-node userCode snippets."
             ),
             "details": {},
         })
@@ -3329,7 +3357,7 @@ def tool_validate_playbook_bundle(
             if tmp_path and _os.path.exists(tmp_path):
                 _os.unlink(tmp_path)
 
-    # Check 5 — lint (pyflakes preferred, pylint fallback; skip if absent)
+    # Check 4 — lint (pyflakes preferred, pylint fallback; skip if absent)
     lint_binary = _shutil.which("pyflakes") or _shutil.which("pylint")
     if not lint_binary or not saved_python:
         checks.append({
