@@ -291,7 +291,11 @@ class SoarMcpRestHandler(dict):
             # Return -32602 Invalid Params (not -32603 Internal Server Error) (fix #12)
             raise _InvalidParamsError("tools/call requires a non-empty 'name' parameter")
 
-        if tool_name not in config.enabled_tools:
+        safe_layout_preview = (
+            tool_name == "save_playbook_layout_only"
+            and bool(arguments.get("dry_run", True))
+        )
+        if tool_name not in config.enabled_tools and not safe_layout_preview:
             if tool_name in TOOL_SCHEMAS:
                 text = (f"Tool '{tool_name}' is disabled. Enable it in the SOAR MCP Server "
                         f"asset configuration and run Test Connectivity.")
@@ -312,7 +316,22 @@ class SoarMcpRestHandler(dict):
 
         self._audit_tool_call(token_verification, tool_name, arguments, outcome="ok")
         result_text = call_tool(tool_name, arguments, client, config)
-        return {"content": [{"type": "text", "text": result_text}], "isError": False}
+        is_error = self._is_tool_error(result_text)
+        return {"content": [{"type": "text", "text": result_text}], "isError": is_error}
+
+    @staticmethod
+    def _is_tool_error(result_text: str) -> bool:
+        """Best-effort MCP isError flag for existing text and structured JSON tool outputs."""
+        text = result_text.lstrip()
+        if text.startswith(("Error:", "Error ")):
+            return True
+        try:
+            payload = json.loads(text)
+        except Exception:
+            return False
+        if isinstance(payload, dict):
+            return payload.get("ok") is False or bool(payload.get("errors"))
+        return False
 
     @staticmethod
     def _audit_tool_call(token_verification, tool_name: str,
