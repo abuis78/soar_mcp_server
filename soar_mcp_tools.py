@@ -108,6 +108,30 @@ class SoarApiClient:
         except Exception as e:
             return None, f"Unexpected error: {type(e).__name__}"
 
+    def post_multipart(
+        self,
+        path: str,
+        files: dict,
+        data: dict | None = None,
+    ) -> tuple[dict | None, str | None]:
+        """POST multipart/form-data (file upload).  Used by import_playbook."""
+        url = f"{self._base_url}/rest/{path.lstrip('/')}"
+        try:
+            resp = self._session.post(
+                url,
+                files=files,
+                data=data or {},
+                timeout=self._config.timeout,
+                verify=self._config.ssl_verify,
+            )
+            return self._handle_response(resp)
+        except requests.exceptions.Timeout:
+            return None, f"SOAR REST API timed out after {self._config.timeout}s"
+        except requests.exceptions.ConnectionError as e:
+            return None, f"Connection error: {e}"
+        except Exception as e:
+            return None, f"Unexpected error: {type(e).__name__}"
+
     def get_binary(self, path: str, params: dict | None = None) -> tuple[bytes | None, str | None]:
         """GET request returning raw bytes (for binary endpoints like playbook export)."""
         url = f"{self._base_url}/rest/{path.lstrip('/')}"
@@ -1645,8 +1669,9 @@ def tool_create_container(client: SoarApiClient, config: McpServerConfig, args: 
 
 
 def tool_import_playbook(client: SoarApiClient, config: McpServerConfig, args: dict) -> str:
-    """Import a playbook archive into SOAR (POST /rest/import_playbook)."""
+    """Import a playbook archive into SOAR (POST /rest/import_playbook, multipart)."""
     import base64 as _b64
+    import io as _io_imp
 
     # Strip ALL whitespace (incl. internal newlines MCP transport may inject)
     archive_b64 = "".join((args.get("archive_b64") or "").split())
@@ -1654,16 +1679,18 @@ def tool_import_playbook(client: SoarApiClient, config: McpServerConfig, args: d
         return "Error: archive_b64 is required."
 
     try:
-        _b64.b64decode(archive_b64, validate=True)
+        raw_bytes = _b64.b64decode(archive_b64, validate=True)
     except Exception:
         return "Error: archive_b64 is not valid base64."
 
     scm_arg = (args.get("scm") or "local").strip()
     force = bool(args.get("force", False))
 
-    # Auto-detect local SCM id from SOAR so we don't send the literal string "local".
-    # SOAR 8.5 rejects unknown SCM names with HTTP 400 (issue #32 root cause).
+    # Resolve writable SCM.
+    # issue #32: GET /rest/scm returns "community" (id=1) as first result — read-only.
+    # Skip read-only and community repos; prefer a writable local/git repo.
     resolved_scm: Optional[str] = None
+    scm_name_resolved: str = ""
     if scm_arg.lower() in ("local", ""):
         scm_list, _ = client.get("scm")
         candidates: list = []
@@ -1674,47 +1701,55 @@ def tool_import_playbook(client: SoarApiClient, config: McpServerConfig, args: d
         for s in candidates:
             if not isinstance(s, dict):
                 continue
+            # Skip read-only repos (community is read-only by default on SOAR 8.5)
+            if s.get("read_only") or s.get("is_read_only") or s.get("readonly"):
+                continue
+            repo_name = (s.get("name") or "").lower()
+            if repo_name in ("community", "splunk-soar-community"):
+                continue
             if s.get("type", "").lower() in ("local", "git"):
                 resolved_scm = str(s.get("id") or s.get("name") or "")
+                scm_name_resolved = s.get("name") or resolved_scm
                 break
     else:
         resolved_scm = scm_arg
+        scm_name_resolved = scm_arg
 
-    body: dict = {"playbook": archive_b64, "force": force}
+    # SOAR 8.5 import_playbook uses multipart/form-data (file upload), NOT base64-in-JSON.
+    # issue #32: sending base64 in a JSON body causes "Failed to load json data" HTTP 400
+    # at a deterministic offset. The UI uses a standard file upload; we replicate that.
+    form_data: dict = {"force": str(force).lower()}
     if resolved_scm:
-        body["scm"] = resolved_scm
+        form_data["scm"] = resolved_scm
 
-    data, err = client.post("import_playbook", body)
+    # Try "playbook" as the multipart file-part name (matches the JSON field name).
+    # If SOAR uses a different field name (e.g. "file"), the 400 diagnostic below says so.
+    files = {"playbook": ("playbook.tgz", _io_imp.BytesIO(raw_bytes), "application/octet-stream")}
+    data, err = client.post_multipart("import_playbook", files=files, data=form_data)
+
     if err:
         if "403" in str(err):
             return (
                 f"Error importing playbook: {err}\n\n"
-                f"Diagnostics (scm_arg={scm_arg!r}, resolved_scm={resolved_scm!r}):\n"
-                "SOAR returned 403 — the raw SOAR message is shown above.\n"
-                "Possible causes:\n"
-                "  1. Role on Automation-type user: SOAR may require the role to be set\n"
-                "     under Administration → User Management → Automation → Edit User,\n"
-                "     not just under the regular Users list. Automation users are a\n"
-                "     separate user type and role assignment may not propagate automatically.\n"
-                "  2. Endpoint permission: `POST /rest/import_playbook` may require the\n"
-                "     'Automation Engineer' role specifically (not just Administrator).\n"
-                "     Try adding 'Automation Engineer' alongside the existing role.\n"
-                "  3. SCM mismatch: scm field sent was {resolved_scm!r}. If SOAR logs\n"
-                "     show an SCM error, pass an explicit scm=<id> matching GET /rest/scm.\n"
-                "  4. Check SOAR audit log (Administration → Audit) for the detailed\n"
-                "     rejection reason — it shows the exact permission check that failed."
+                f"Diagnostics: scm_arg={scm_arg!r}, resolved_scm={resolved_scm!r} "
+                f"({scm_name_resolved!r})\n"
+                "The resolved SCM repo may still be read-only, or the token user lacks\n"
+                "write permission on that repo. Steps:\n"
+                "  1. Run list_cases or get_soar_info to confirm the token is valid.\n"
+                "  2. Check SOAR → Administration → Audit for the exact rejection reason.\n"
+                "  3. Pass an explicit writable scm=<id> from GET /rest/scm."
             )
         if "400" in str(err):
             return (
                 f"Error importing playbook (HTTP 400): {err}\n\n"
-                f"Diagnostics:\n"
-                f"  scm_arg={scm_arg!r}, resolved_scm={resolved_scm!r}\n"
-                "Possible causes:\n"
-                "  1. Unresolvable SCM — check /rest/scm for valid ids and pass scm=<id>.\n"
-                "  2. Archive format — SOAR expects gzip-tar (.tgz); verify archive_b64 "
-                "is from export_playbook (not a .zip or raw .tar).\n"
-                "  3. Duplicate name + force=False — retry with force=True.\n"
-                "  4. Role insufficient — ensure user has 'Automation Engineer' role."
+                f"Diagnostics: scm_arg={scm_arg!r}, resolved_scm={resolved_scm!r}, "
+                f"archive={len(raw_bytes):,} bytes\n"
+                "Multipart file-part name used: 'playbook'. If SOAR expects a different\n"
+                "field name (check browser DevTools → Network → Import Playbook request),\n"
+                "retry with the correct field. Other causes:\n"
+                "  1. Archive corrupt — verify archive_b64 is from export_playbook.\n"
+                "  2. SCM id wrong — pass explicit scm=<id> from GET /rest/scm.\n"
+                "  3. Duplicate name + force=False — retry with force=True."
             )
         return f"Error importing playbook: {err}"
 
@@ -1730,7 +1765,8 @@ def tool_import_playbook(client: SoarApiClient, config: McpServerConfig, args: d
         f"✅ Playbook imported successfully.\n"
         f"  Name: {name}\n"
         f"  ID: {pb_id}\n"
-        f"  Status: {status}"
+        f"  Status: {status}\n"
+        f"  SCM: {scm_name_resolved or resolved_scm or 'default'}"
     ) + (_disclaimer() if config.advisory_disclaimer else "")
 
 
