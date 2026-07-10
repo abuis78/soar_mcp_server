@@ -1273,13 +1273,9 @@ def tool_list_case_notes(client: SoarApiClient, config: McpServerConfig, args: d
 def tool_list_playbooks(client: SoarApiClient, config: McpServerConfig, args: dict) -> str:
     """List available SOAR playbooks."""
     active_only = args.get("active_only", True)
-    category = args.get("category", "")
+    category = (args.get("category", "") or "").strip()
 
     params: dict = {"page_size": config.max_results}
-    if active_only:
-        params["_filter_active"] = "true"  # SOAR requires lowercase (bug #7)
-    if category:
-        params["_filter_category__icontains"] = f'"{category}"'
 
     data, err = client.get("playbook", params=params)
     if err:
@@ -1287,6 +1283,11 @@ def tool_list_playbooks(client: SoarApiClient, config: McpServerConfig, args: di
 
     items = data if isinstance(data, list) else data.get("data", [])
     total = data.get("count", len(items)) if isinstance(data, dict) else len(items)
+    if active_only:
+        items = [pb for pb in items if bool(pb.get("active"))]
+    if category:
+        cat = category.lower()
+        items = [pb for pb in items if cat in str(pb.get("category", "")).lower()]
     if not items:
         return "No playbooks found."
 
