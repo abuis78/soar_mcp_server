@@ -80,6 +80,8 @@ ALL_TOOLS: list[str] = [
     "check_visual_editor_compat",
     # Write tools (v1.6.3+)
     "save_playbook_layout_only",
+    # Client config helper (v1.8.0+)
+    "generate_mcp_client_config",
 ]
 
 READ_ONLY_TOOLS: frozenset[str] = frozenset(
@@ -112,6 +114,8 @@ READ_ONLY_TOOLS: frozenset[str] = frozenset(
         "verify_layout_only_change",
         "validate_playbook_bundle",
         "check_visual_editor_compat",
+        # Client config helper (v1.8.0+)
+        "generate_mcp_client_config",
     ]
 )
 
