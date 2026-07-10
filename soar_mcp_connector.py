@@ -363,21 +363,27 @@ class SoarMcpConnector(BaseConnector):
             }
         }, indent=2)
 
+        # Security (issue #54): do NOT persist the raw token (or a shell export
+        # containing it) in action_result.data — data.* is stored in the SOAR DB
+        # and is queryable/retrievable long after mint, contradicting "shown
+        # once". The raw token is surfaced only in the (prominent, one-time)
+        # status message. The datapath keeps non-secret fields + an env-var
+        # config snippet.
         action_result.add_data({
             "token_id": minted.id,
             "label": minted.label,
-            "raw_token": minted.raw_token,           # shown ONCE
             "expires_at": minted.expires_at,
             "allowed_tools": minted.allowed_tools,
             "soar_user_id": minted.soar_user_id,
             "mcp_endpoint": endpoint,
             "cursor_mcp_json_snippet": cursor_snippet,
-            "shell_export_hint": f'export SOAR_MCP_TOKEN="{minted.raw_token}"',
         })
         action_result.set_summary({"token_id": minted.id, "label": minted.label})
         return action_result.set_status(
             phantom.APP_SUCCESS,
-            f"Minted MCP token {minted.id}. Copy now - the raw token is shown only this once.")
+            f"Minted MCP token {minted.id}. Copy the raw token now — it is shown only "
+            f"this once and is NOT stored:\n\n{minted.raw_token}\n\n"
+            f'Shell: export SOAR_MCP_TOKEN="{minted.raw_token}"')
 
     def _handle_list_mcp_tokens(self, param: dict) -> bool:
         action_result = self.add_action_result(ActionResult(dict(param)))

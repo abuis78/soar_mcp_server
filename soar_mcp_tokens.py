@@ -68,6 +68,18 @@ _TOKEN_PREFIX = "soarmcp_"
 _TOKEN_RAW_BYTES = 32  # 256 bits of entropy
 _STORE_VERSION = 1
 
+# Optional out-of-band Fernet key (issue #56). If this environment variable is
+# set, it is used for encrypt/decrypt in preference to the key stored in
+# mcp_tokens.json, so the key can live outside the data file (file-read access
+# then no longer equals plaintext access). Must be stable across the token
+# lifetime; if set after tokens were minted with a file key, decryption fails.
+_FERNET_KEY_ENV = "SOAR_MCP_FERNET_KEY"
+
+
+def _effective_key(file_key: str) -> str:
+    """Return the env-var Fernet key if configured, else the file-stored key."""
+    return os.environ.get(_FERNET_KEY_ENV) or file_key
+
 
 # ── Encryption helpers (Fernet) ────────────────────────────────────────────────
 
@@ -333,7 +345,7 @@ class TokenStore:
                 "soar_user_id": soar_user_id.strip()[:128],
                 "hash": _hash_token(raw, salt_hex),
                 "salt": salt_hex,
-                "encrypted_soar_token": _encrypt(soar_call_token, state.fernet_key),
+                "encrypted_soar_token": _encrypt(soar_call_token, _effective_key(state.fernet_key)),
                 "allowed_tools": allowed_tools_list,
                 "created_at": now,
                 "expires_at": expires_at,
@@ -395,7 +407,7 @@ class TokenStore:
                     pass
                 try:
                     call_token = _decrypt(entry.get("encrypted_soar_token", ""),
-                                          state.fernet_key)
+                                          _effective_key(state.fernet_key))
                 except Exception as exc:
                     logger.exception("[MCP tokens] decrypt failure: %s", exc)
                     return TokenVerification(valid=False, token_id=entry["id"],
