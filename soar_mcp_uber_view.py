@@ -235,6 +235,12 @@ def _extract_asset_name_from_request(context) -> str:
 def _get_base_url(context):
     """
     Try every known method to get the SOAR base URL, in order of preference.
+
+    Note (issue #58): this base URL is used ONLY to render the displayed MCP
+    endpoint in the widget. No credential is sent to it — the auth token is a
+    placeholder here (see issue #52) — so the request-header fallbacks below are
+    display-only and carry no SSRF/credential-exfil risk, unlike the handler's
+    token-bearing _extract_base_url (which uses phantom.rest exclusively).
     """
     # 1. SOAR's own helper (most reliable)
     try:

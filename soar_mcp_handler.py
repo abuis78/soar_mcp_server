@@ -46,6 +46,17 @@ except Exception:  # noqa: BLE001
         except Exception:
             return {"_redaction_error": "sanitisation failed"}
 
+import hashlib
+
+# Rate limiter for the legacy ph-auth-token path (issue #44). Scoped tokens are
+# rate-limited inside the token store; without this the default legacy path is
+# unbounded. Per-process only — use a reverse-proxy limit for a hard DoS ceiling.
+try:
+    from soar_mcp_tokens import _RateLimiter as _LegacyRateLimiter
+    _legacy_rate_limiter = _LegacyRateLimiter()
+except Exception:  # noqa: BLE001
+    _legacy_rate_limiter = None
+
 logger = logging.getLogger(__name__)
 audit_logger = logging.getLogger("soar_mcp.audit")
 
@@ -208,6 +219,19 @@ class SoarMcpRestHandler(dict):
         if token_verification is None and config.legacy_full_token_warn:
             logger.info("[SOAR MCP] Legacy full ph-auth-token used (rpc_method=%s)", rpc_method)
 
+        # Rate-limit the legacy ph-auth-token path too (#44). Keyed on a hash of
+        # the presented token so the raw token is never used as a dict key.
+        if (token_verification is None
+                and _legacy_rate_limiter is not None
+                and config.token_rate_limit_per_minute > 0):
+            legacy_key = "legacy:" + hashlib.sha256(auth_token.encode()).hexdigest()[:16]
+            if not _legacy_rate_limiter.check(legacy_key, config.token_rate_limit_per_minute):
+                audit_logger.warning(
+                    "[SOAR MCP] auth=reject reason=rate_limited path=legacy rpc_method=%s",
+                    rpc_method,
+                )
+                return self._error(rpc_id, -32000, "Rate limit exceeded. Try again shortly.")
+
         # Build SOAR API client for tool calls
         client = SoarApiClient(soar_base, soar_call_token, config)
 
@@ -356,6 +380,13 @@ class SoarMcpRestHandler(dict):
 
     @staticmethod
     def _extract_base_url(request) -> str:
+        # Security (issue #58): the returned base_url is used to build the
+        # SoarApiClient that sends the SOAR call token. It must come from the
+        # authoritative SOAR system setting, NEVER from attacker-controllable
+        # request headers (Host / X-Forwarded-*), which could redirect
+        # token-bearing API calls to an attacker host (SSRF/credential exfil).
+        # phantom.rest.get_phantom_base_url() is authoritative on-box; if it is
+        # unavailable we fail closed (return "") rather than trust headers.
         if request is None:
             return ""
         try:
@@ -365,18 +396,8 @@ class SoarMcpRestHandler(dict):
                 return url.rstrip("/")
         except Exception:
             pass
-        try:
-            return request.build_absolute_uri("/").rstrip("/")
-        except Exception:
-            pass
-        try:
-            meta = getattr(request, "META", {})
-            host = meta.get("HTTP_HOST") or meta.get("SERVER_NAME", "")
-            scheme = meta.get("HTTP_X_FORWARDED_PROTO", "https")
-            if host:
-                return f"{scheme}://{host}"
-        except Exception:
-            pass
+        logger.warning("[SOAR MCP] Could not resolve authoritative SOAR base URL; "
+                       "refusing to derive it from request headers.")
         return ""
 
     @staticmethod
