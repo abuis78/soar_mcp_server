@@ -1050,15 +1050,60 @@ TOOL_SCHEMAS: dict[str, dict] = {
 # ==============================================================================
 
 
+def _case_in_scope(case: dict, config: McpServerConfig) -> bool:
+    """Return True if a case passes the configured MCP access controls
+    (min_severity and allowed_labels).
+
+    Enforced consistently across ALL case-accessing tools so the controls
+    cannot be bypassed via get_case/search_cases/list_artifacts/list_case_notes
+    (issue #41).
+    """
+    if config.min_severity:
+        min_sev = _SEVERITY_ORDER.get(config.min_severity, 0)
+        if _SEVERITY_ORDER.get((case.get("severity") or "").lower(), 0) < min_sev:
+            return False
+    if config.allowed_labels:
+        if (case.get("label") or "") not in config.allowed_labels:
+            return False
+    return True
+
+
+def _scope_guard(client: SoarApiClient, config: McpServerConfig, case_id: int) -> Optional[str]:
+    """Return an error string if the parent case is outside MCP scope, else None.
+
+    Used by child-object tools (list_artifacts, list_case_notes) so they cannot
+    be used to read data from cases the label/severity controls forbid (#41).
+    Only fetches the parent case when access controls are actually configured;
+    fails open on a transient fetch error (SOAR token remains the primary auth).
+    """
+    if not (config.min_severity or config.allowed_labels):
+        return None
+    case, err = client.get(f"container/{case_id}")
+    if err or not isinstance(case, dict):
+        return None
+    if not _case_in_scope(case, config):
+        return f"Case #{case_id} is outside the MCP-allowed scope (label/severity restriction)."
+    return None
+
+
 def tool_list_cases(client: SoarApiClient, config: McpServerConfig, args: dict) -> str:
     """List SOAR cases with optional filters."""
     limit = min(int(args.get("limit") or 20), config.max_results)
+
+    # min_severity is a range and allowed_labels is a set — neither maps cleanly
+    # to a single SOAR _filter param, so they are enforced client-side. Fetch up
+    # to max_results (not just `limit`) before filtering, otherwise pagination
+    # would truncate the result set BEFORE the safety filters run and hide
+    # matching cases (issue #63).
+    scope_filtering = bool(config.min_severity or config.allowed_labels)
+    page_size = config.max_results if scope_filtering else limit
+
     params: dict[str, Any] = {
         "_filter_status": f'"{args["status"]}"' if args.get("status") else None,
         "_filter_severity": f'"{args["severity"]}"' if args.get("severity") else None,
         "_filter_label": f'"{args["label"]}"' if args.get("label") else None,
         "_filter_owner_name": f'"{args["owner"]}"' if args.get("owner") else None,
-        "page_size": limit,
+        "page_size": page_size,
         "sort": "create_time",
         "order": "desc",
     }
@@ -1071,21 +1116,17 @@ def tool_list_cases(client: SoarApiClient, config: McpServerConfig, args: dict) 
     items = data if isinstance(data, list) else data.get("data", [])
     total = data.get("count", len(items)) if isinstance(data, dict) else len(items)
 
-    # Apply min_severity filter if configured
-    if config.min_severity:
-        min_sev_val = _SEVERITY_ORDER.get(config.min_severity, 0)
-        items = [c for c in items if _SEVERITY_ORDER.get(c.get("severity", "").lower(), 0) >= min_sev_val]
-
-    # Apply allowed_labels filter if configured
-    if config.allowed_labels:
-        items = [c for c in items if c.get("label", "") in config.allowed_labels]
+    # Apply the configured access controls (min_severity + allowed_labels).
+    if scope_filtering:
+        items = [c for c in items if _case_in_scope(c, config)]
 
     if not items:
         return "No cases found matching the specified filters."
 
-    suffix = f" (showing {len(items)} of {total} — use filters to narrow)" if total > limit else ""
-    lines = [f"Found {len(items)} case(s){suffix}:\n"]
-    for c in items[:limit]:
+    shown = items[:limit]
+    suffix = f" (showing {len(shown)} of {len(items)} matching — use filters to narrow)" if len(items) > limit else ""
+    lines = [f"Found {len(shown)} case(s){suffix}:\n"]
+    for c in shown:
         lines.append(_fmt_case(c))
     result = "\n".join(lines)
     return result + (_disclaimer() if config.advisory_disclaimer else "")
@@ -1102,6 +1143,11 @@ def tool_get_case(client: SoarApiClient, config: McpServerConfig, args: dict) ->
         return f"Error fetching case {case_id}: {err}"
     if not isinstance(data, dict):
         return f"Unexpected response format for case {case_id}."
+
+    # Enforce the configured MCP access controls (issue #41) — a case outside
+    # the allowed labels / below min_severity must not be readable by ID either.
+    if not _case_in_scope(data, config):
+        return f"Case #{case_id} is outside the MCP-allowed scope (label/severity restriction)."
 
     # Fetch artifact count
     art_data, _ = client.get("artifact", params={"_filter_container_id": case_id, "page_size": 1})
@@ -1150,9 +1196,12 @@ def tool_search_cases(client: SoarApiClient, config: McpServerConfig, args: dict
         return "Error: query is required."
     limit = min(int(args.get("limit") or 20), config.max_results)
 
+    # Fetch up to max_results so the client-side scope filter (issue #41) does
+    # not run on a prematurely truncated page.
+    scope_filtering = bool(config.min_severity or config.allowed_labels)
     params = {
         "_filter_name__icontains": f'"{query}"',
-        "page_size": limit,
+        "page_size": config.max_results if scope_filtering else limit,
         "sort": "create_time",
         "order": "desc",
     }
@@ -1161,13 +1210,16 @@ def tool_search_cases(client: SoarApiClient, config: McpServerConfig, args: dict
         return f"Error searching cases: {err}"
 
     items = data if isinstance(data, list) else data.get("data", [])
-    total = data.get("count", len(items)) if isinstance(data, dict) else len(items)
+    # Enforce the configured MCP access controls (issue #41).
+    if scope_filtering:
+        items = [c for c in items if _case_in_scope(c, config)]
     if not items:
         return f"No cases found matching '{query}'."
 
-    suffix = f" (showing {len(items)} of {total} — refine query for more)" if total > limit else ""
-    lines = [f"Found {len(items)} case(s) matching '{query}'{suffix}:\n"]
-    for c in items[:limit]:
+    shown = items[:limit]
+    suffix = f" (showing {len(shown)} of {len(items)} matching — refine query for more)" if len(items) > limit else ""
+    lines = [f"Found {len(shown)} case(s) matching '{query}'{suffix}:\n"]
+    for c in shown:
         lines.append(_fmt_case(c))
     return "\n".join(lines) + (_disclaimer() if config.advisory_disclaimer else "")
 
@@ -1177,6 +1229,9 @@ def tool_list_artifacts(client: SoarApiClient, config: McpServerConfig, args: di
     case_id, err_msg = _require_positive_int(args.get("case_id"), "case_id")
     if err_msg:
         return err_msg
+    scope_err = _scope_guard(client, config, case_id)
+    if scope_err:
+        return scope_err
     art_type = args.get("artifact_type", "")
     limit = config.max_items_per_case
 
@@ -1238,6 +1293,9 @@ def tool_list_case_notes(client: SoarApiClient, config: McpServerConfig, args: d
     case_id, err_msg = _require_positive_int(args.get("case_id"), "case_id")
     if err_msg:
         return err_msg
+    scope_err = _scope_guard(client, config, case_id)
+    if scope_err:
+        return scope_err
 
     data, err = client.get("note", params={"_filter_container_id": case_id, "page_size": config.max_items_per_case})
     if err:
