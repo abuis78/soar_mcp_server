@@ -1663,6 +1663,14 @@ def tool_import_playbook(client: SoarApiClient, config: McpServerConfig, args: d
 
     data, err = client.post("import_playbook", body)
     if err:
+        if "403" in str(err):
+            return (
+                f"Error importing playbook: {err}\n\n"
+                "Required SOAR role: 'Automation Engineer' or 'Administrator'.\n"
+                "The archive is valid — this is a token permission issue.\n"
+                "Fix: Administration → User Management → Users → assign the token user "
+                "to the 'Automation Engineer' role, then retry."
+            )
         return f"Error importing playbook: {err}"
 
     if not isinstance(data, dict):
@@ -1937,10 +1945,16 @@ def _resolve_current_id(
         current_id = rest_data.get("current_id") or rest_data.get("id") or pid
         return int(current_id), {}, None
 
-    # VERIFY: field name for current_id in COA response (may be "current_id" or nested)
-    raw_current = coa_data.get("current_id")
-    if raw_current is None:
-        raw_current = coa_data.get("id", pid)
+    # Live SOAR 8.5: current_id may be at top level, inside "coa", or inside "coa.data"
+    coa_sub = coa_data.get("coa") or {}
+    data_sub = coa_sub.get("data") or {}
+    raw_current = (
+        coa_data.get("current_id")
+        or data_sub.get("current_id")
+        or coa_sub.get("current_id")
+        or coa_data.get("id")
+        or pid
+    )
     return int(raw_current), coa_data, None
 
 
@@ -1948,23 +1962,63 @@ def _get_coa_nodes_edges(coa_data: dict) -> tuple[list, list]:
     """
     Extract nodes and edges from a COA graph response.
 
-    # VERIFY: top-level key for nodes — may be "nodes", "coa.nodes", or inside a "coa" sub-key.
-    # VERIFY: top-level key for edges — may be "connections", "edges", or "links".
+    Live SOAR 8.5 shape (confirmed via export archive / issue #30):
+        coa_data["coa"]["data"]["nodes"]  → dict keyed by functionId
+        coa_data["coa"]["data"]["edges"]  → list (or "connections")
+
+    Also handles flatter shapes from COA REST vs. export archive differences.
     """
-    # Try direct keys first, then nested under "coa"
-    nodes = coa_data.get("nodes") or coa_data.get("coa", {}).get("nodes", [])
-    edges = (
-        coa_data.get("connections")
-        or coa_data.get("edges")
+    coa_sub = coa_data.get("coa") or {}
+    data_sub = coa_sub.get("data") or {}
+
+    # Nodes: try deep path first, then shallower fallbacks
+    nodes_raw = (
+        data_sub.get("nodes")
+        or coa_sub.get("nodes")
+        or coa_data.get("nodes")
+        or {}
+    )
+    # Nodes may be a dict keyed by functionId — normalize to list
+    if isinstance(nodes_raw, dict):
+        nodes: list = list(nodes_raw.values())
+    elif isinstance(nodes_raw, list):
+        nodes = nodes_raw
+    else:
+        nodes = []
+
+    # Edges: same depth strategy; field may be "connections" or "edges"
+    edges_raw = (
+        data_sub.get("connections") or data_sub.get("edges")
+        or coa_sub.get("connections") or coa_sub.get("edges")
+        or coa_data.get("connections") or coa_data.get("edges")
         or coa_data.get("links")
-        or coa_data.get("coa", {}).get("connections", [])
         or []
     )
-    if not isinstance(nodes, list):
-        nodes = []
-    if not isinstance(edges, list):
-        edges = []
+    edges: list = edges_raw if isinstance(edges_raw, list) else []
     return nodes, edges
+
+
+def _extract_python_from_coa(nodes: list) -> Optional[str]:
+    """
+    Reconstruct a Python payload from COA userCode blocks.
+
+    SOAR 8.5 does not expose saved Python as a REST field; instead it regenerates
+    Python from COA userCode on every VPE save. Combining all userCode blocks gives
+    a functionally equivalent payload for compile/lint checks.
+
+    # VERIFY: userCode field name inside a code node — may be "userCode", "user_code", or "code"
+    """
+    parts: list[str] = []
+    for n in nodes:
+        if (n.get("type") or "").lower() != "code":
+            continue
+        code = n.get("userCode") or n.get("user_code") or n.get("code") or ""
+        if code.strip():
+            fn_name = (
+                n.get("functionName") or n.get("function_name") or n.get("name") or "block"
+            )
+            parts.append(f"# --- {fn_name} ---\n{code}")
+    return "\n\n".join(parts) if parts else None
 
 
 def _normalize_coa_volatile(data: object, _depth: int = 0) -> object:
@@ -2879,13 +2933,17 @@ def tool_validate_playbook_bundle(
     checks: list[dict] = []
 
     # Check 1 — SOAR structure validation endpoint
-    # VERIFY: does /rest/playbook/{id}/validate exist on SOAR 8.5?
+    # SOAR 8.5 confirmed: /rest/playbook/{id}/validate does not exist → HTTP 400/404.
+    # passed_validation (check 2) serves as the structure signal on 8.5.
     val_data, val_err = client.get(f"playbook/{current_id}/validate")
-    if val_err and "404" in str(val_err):
+    if val_err and ("404" in str(val_err) or "400" in str(val_err)):
         checks.append({
             "name": "validate_structure",
             "status": "skipped",
-            "message": "SOAR /rest/playbook/{id}/validate endpoint not found on this version.",
+            "message": (
+                "SOAR 8.5: no dedicated /rest/playbook/{id}/validate endpoint "
+                "(HTTP 400/404). Use passed_validation flag (check 2) as structure signal."
+            ),
             "details": {},
         })
     elif val_err:
@@ -2940,19 +2998,30 @@ def tool_validate_playbook_bundle(
     })
 
     # Check 4 — Python py_compile (AST-only, no execution)
+    # SOAR 8.5: Python is not a REST field; reconstruct from COA userCode blocks (#31 fix).
     saved_python = None
+    python_source = None
     if isinstance(rest_data, dict):
         saved_python = (
             rest_data.get("code")
             or rest_data.get("script")
             or rest_data.get("playbook_run_data")
         )
+        if saved_python:
+            python_source = "rest_field"
+    if not saved_python:
+        saved_python = _extract_python_from_coa(nodes)
+        if saved_python:
+            python_source = "coa_usercode"
 
     if not saved_python:
         checks.append({
             "name": "python_compile",
             "status": "skipped",
-            "message": "Saved Python payload not found in REST record — VERIFY field name.",
+            "message": (
+                "No Python payload found — REST record has no code field and "
+                "COA contains no code-type nodes with userCode."
+            ),
             "details": {},
         })
     else:
@@ -2967,8 +3036,8 @@ def tool_validate_playbook_bundle(
             checks.append({
                 "name": "python_compile",
                 "status": "passed",
-                "message": "Python AST parse succeeded.",
-                "details": {},
+                "message": f"Python AST parse succeeded (source: {python_source}).",
+                "details": {"source": python_source},
             })
         except _py_compile.PyCompileError as pce:
             checks.append({
