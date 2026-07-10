@@ -29,7 +29,7 @@ _app_dir = os.path.dirname(os.path.abspath(__file__))
 if _app_dir not in sys.path:
     sys.path.insert(0, _app_dir)
 
-from soar_mcp_config import McpServerConfig, get_config
+from soar_mcp_config import McpServerConfig, get_config, normalise_base_url
 from soar_mcp_tools import TOOL_SCHEMAS, SoarApiClient, call_tool
 from soar_mcp_utils import redact_nested
 
@@ -131,8 +131,10 @@ class SoarMcpRestHandler(dict):
         # we don't track sessions server-side but accept and ignore it.
         session_id = meta.get("HTTP_MCP_SESSION_ID", "")
 
-        # Extract base URL from request for API callbacks
-        soar_base = self._extract_base_url(request)
+        # Extract base URL for API callbacks.
+        # Prefer SOAR's authoritative on-box helper; fall back only to trusted
+        # admin configuration. Never derive this from request headers (#58).
+        soar_base = self._extract_base_url(request, config)
 
         # Persist asset name for widget
         asset_name = path_args[0] if path_args else ""
@@ -231,6 +233,15 @@ class SoarMcpRestHandler(dict):
                     rpc_method,
                 )
                 return self._error(rpc_id, -32000, "Rate limit exceeded. Try again shortly.")
+
+        if rpc_method == "tools/call" and not soar_base:
+            return self._error(
+                rpc_id,
+                -32000,
+                "Unable to resolve SOAR base URL for MCP tool calls. "
+                "Configure the SOAR MCP Server asset base_url or [server] base_url "
+                "in mcp.conf, then run Test Connectivity.",
+            )
 
         # Build SOAR API client for tool calls
         client = SoarApiClient(soar_base, soar_call_token, config)
@@ -379,25 +390,28 @@ class SoarMcpRestHandler(dict):
                 "error": {"code": code, "message": message}}
 
     @staticmethod
-    def _extract_base_url(request) -> str:
+    def _extract_base_url(request, config: McpServerConfig | None = None) -> str:
         # Security (issue #58): the returned base_url is used to build the
         # SoarApiClient that sends the SOAR call token. It must come from the
         # authoritative SOAR system setting, NEVER from attacker-controllable
         # request headers (Host / X-Forwarded-*), which could redirect
         # token-bearing API calls to an attacker host (SSRF/credential exfil).
-        # phantom.rest.get_phantom_base_url() is authoritative on-box; if it is
-        # unavailable we fail closed (return "") rather than trust headers.
-        if request is None:
-            return ""
+        # phantom.rest.get_phantom_base_url() is authoritative on-box. Some SOAR
+        # 8.5 installations do not expose phantom.rest in app handler context,
+        # so we allow a trusted admin-configured fallback from the app asset or
+        # mcp.conf. If neither exists, fail closed with a clear MCP error.
         try:
             import phantom.rest as _pr
             url = _pr.get_phantom_base_url()
-            if url:
-                return url.rstrip("/")
+            base_url = normalise_base_url(url)
+            if base_url:
+                return base_url
         except Exception:
             pass
+        if config is not None and config.base_url:
+            return config.base_url
         logger.warning("[SOAR MCP] Could not resolve authoritative SOAR base URL; "
-                       "refusing to derive it from request headers.")
+                       "no trusted configured fallback is available.")
         return ""
 
     @staticmethod
