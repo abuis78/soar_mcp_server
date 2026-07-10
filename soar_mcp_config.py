@@ -331,6 +331,13 @@ class McpConfigLoader:
         if eth is not None:
             config.enable_test_harness = bool(eth)
 
+        ssl_override = overrides.get("ssl_verify")
+        if ssl_override is not None:
+            if isinstance(ssl_override, bool):
+                config.ssl_verify = ssl_override
+            else:
+                config.ssl_verify = self._parse_ssl_verify(str(ssl_override))
+
         # Persist MCP endpoint URL so tools can display it
         mcp_ep = overrides.get("mcp_endpoint")
         if mcp_ep and isinstance(mcp_ep, str):

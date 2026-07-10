@@ -45,7 +45,7 @@ Transform Splunk SOAR into an MCP (Model Context Protocol) server endpoint for d
                          │  Authentication: ph-auth-token header
                          ▼
 ┌─────────────────────────────────────────────────────────────┐
-│  https://<your-soar>/rest/handler/phantom_soar_mcp_server/mcp │
+│  https://<your-soar>/rest/handler/soarmcpserver_<appid>/<asset> │
 │  ┌───────────────────────────────────────────────────────┐  │
 │  │  SOAR MCP Server App (Python REST Handler)           │  │
 │  │  ├─ Tool Registry (asset config checkboxes)          │  │
@@ -83,8 +83,11 @@ Transform Splunk SOAR into an MCP (Model Context Protocol) server endpoint for d
 
 The app installs immediately and the MCP endpoint becomes active at:
 ```
-https://<your-soar>/rest/handler/phantom_soar_mcp_server/mcp
+https://<your-soar>/rest/handler/soarmcpserver_ff5f68f3-353c-4d89-9767-967ef5d99117/<asset_name>
 ```
+
+Use the endpoint shown by **Test Connectivity** or **Get MCP Config**. The last
+path segment is the SOAR asset name, for example `mcp`.
 
 ### Step 2: Configure the Asset
 
@@ -139,7 +142,7 @@ All tools are individually enabled/disabled via checkboxes. See [Available Tools
 {
   "mcpServers": {
     "splunk-soar": {
-      "url": "https://soar.example.com/rest/handler/phantom_soar_mcp_server/mcp",
+      "url": "https://soar.example.com/rest/handler/soarmcpserver_ff5f68f3-353c-4d89-9767-967ef5d99117/mcp",
       "headers": {
         "ph-auth-token": "YOUR_SOAR_AUTH_TOKEN"
       }
@@ -155,7 +158,7 @@ Save and restart Claude Desktop. Verify: look for "splunk-soar" in the bottom-le
 ```bash
 claude mcp add splunk-soar \
   --transport http \
-  --url "https://soar.example.com/rest/handler/phantom_soar_mcp_server/mcp" \
+  --url "https://soar.example.com/rest/handler/soarmcpserver_ff5f68f3-353c-4d89-9767-967ef5d99117/mcp" \
   --header "ph-auth-token: YOUR_SOAR_AUTH_TOKEN"
 ```
 
@@ -170,7 +173,7 @@ claude mcp list
 **Prerequisites:** Enterprise Claude.ai subscription with MCP connector support; SOAR accessible from the internet or via VPN/proxy.
 
 1. Claude.ai → **Settings → Integrations → MCP Servers → + Add Server**
-2. **URL**: `https://soar.example.com/rest/handler/phantom_soar_mcp_server/mcp`
+2. **URL**: `https://soar.example.com/rest/handler/soarmcpserver_ff5f68f3-353c-4d89-9767-967ef5d99117/mcp`
 3. **Auth Type**: Custom Header — `ph-auth-token: YOUR_SOAR_AUTH_TOKEN`
 
 > ⚠️ When using Claude.ai, SOAR case data (titles, descriptions, artifact values, analyst notes) transits Anthropic's cloud infrastructure. Review [Anthropic's data retention policy](https://www.anthropic.com/legal/privacy) before connecting a production SOAR instance.
@@ -179,9 +182,9 @@ claude mcp list
 
 | Issue | Solution |
 |-------|----------|
-| "Connection refused" | `curl -I https://soar.example.com/rest/handler/phantom_soar_mcp_server/mcp` |
+| "Connection refused" | `curl -I https://soar.example.com/rest/handler/soarmcpserver_ff5f68f3-353c-4d89-9767-967ef5d99117/mcp` |
 | "Unauthorized" | Check auth token in SOAR UI → User Management |
-| "SSL certificate verify failed" | Add SOAR's SSL cert to system trust store, or set `ssl_verify = false` in `local/mcp.conf` (testing only) |
+| "SSL certificate verify failed" | Add SOAR's SSL cert to system trust store, or disable **SSL Verify** in the SOAR asset config for test instances only |
 | Tools not appearing | Run **Test Connectivity** to refresh tool registry |
 | "Tool disabled" error | Enable tool checkbox in asset config → Test Connectivity |
 
@@ -271,6 +274,7 @@ All configuration is managed from **SOAR UI → Apps → SOAR MCP Server → Ass
 |-------|------|---------|
 | **Base URL** | String | SOAR instance URL for Test Connectivity validation |
 | **Auth Token** | Password | SOAR authorization token |
+| **SSL Verify** | Boolean | Verify TLS certs for handler API callbacks; disable only for test/self-signed instances |
 | **AI Instructions** | Text | Context injected into every MCP session |
 | **enable_test_harness** | Boolean | Enables test harness / `create_container` tool (v1.6.9+) |
 | **scoped_tokens_enabled** | Boolean | Enable per-user scoped tokens (v1.5.0+) |
@@ -427,7 +431,7 @@ SOAR:   [Executes, logs with analyst approval reference]
 | Symptom | Cause | Fix |
 |---------|-------|-----|
 | "Missing app directory" on install | TAR lacks top-level directory entry | Rebuild from parent dir: `cd /parent && tar -czf app.tar soar_mcp_server/` |
-| "Connection refused" | MCP endpoint not accessible | `curl -I https://soar.example.com/rest/handler/phantom_soar_mcp_server/mcp` |
+| "Connection refused" | MCP endpoint not accessible | `curl -I https://soar.example.com/rest/handler/soarmcpserver_ff5f68f3-353c-4d89-9767-967ef5d99117/mcp` |
 | "Unauthorized" | Invalid auth token | Regenerate token in SOAR UI |
 | node_count = 0 | COA endpoint empty on SOAR 8.5 | Fixed in v1.6.5 — export archive fallback is automatic |
 | Python compile skipped | No `code`-type nodes | Fixed in v1.6.6 — Python extracted from export archive automatically |
