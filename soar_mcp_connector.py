@@ -247,7 +247,8 @@ class SoarMcpConnector(BaseConnector):
                 else:
                     self.save_progress(f"SOAR API returned HTTP {resp.status_code} — check base_url.")
             except Exception as exc:
-                self.save_progress(f"SOAR API check failed: {exc} — verifying config only.")
+                self.debug_print(f"[MCP] SOAR API check failed: {exc}")
+                self.save_progress("SOAR API check failed — verifying config only.")
 
         # Purge expired/revoked tokens older than 90 days (lazy housekeeping)
         purged = 0
@@ -257,7 +258,8 @@ class SoarMcpConnector(BaseConnector):
                 if purged:
                     self.save_progress(f"Purged {purged} expired/revoked MCP token(s).")
             except Exception as exc:
-                self.save_progress(f"Token purge skipped: {exc}")
+                self.debug_print(f"[MCP] Token purge skipped: {exc}")
+                self.save_progress("Token purge skipped.")
 
         action_result.add_data({
             "mcp_endpoint": mcp_endpoint,
@@ -348,7 +350,8 @@ class SoarMcpConnector(BaseConnector):
                 lifetime_days=lifetime_days,
             )
         except Exception as exc:
-            return action_result.set_status(phantom.APP_ERROR, f"Mint failed: {exc}")
+            self.debug_print(f"[MCP] Mint failed: {exc}")
+            return action_result.set_status(phantom.APP_ERROR, "Mint failed — see debug log for details.")
 
         endpoint = build_mcp_endpoint(self._base_url or "", self._asset_name or "")
         cursor_snippet = json.dumps({
@@ -386,7 +389,8 @@ class SoarMcpConnector(BaseConnector):
         try:
             tokens = TokenStore.default().list(include_revoked=include_revoked)
         except Exception as exc:
-            return action_result.set_status(phantom.APP_ERROR, f"List failed: {exc}")
+            self.debug_print(f"[MCP] List failed: {exc}")
+            return action_result.set_status(phantom.APP_ERROR, "List failed — see debug log for details.")
         for t in tokens:
             action_result.add_data({
                 "id": t.id, "label": t.label, "soar_user_id": t.soar_user_id,
@@ -410,7 +414,8 @@ class SoarMcpConnector(BaseConnector):
         try:
             ok = TokenStore.default().revoke(token_id)
         except Exception as exc:
-            return action_result.set_status(phantom.APP_ERROR, f"Revoke failed: {exc}")
+            self.debug_print(f"[MCP] Revoke failed: {exc}")
+            return action_result.set_status(phantom.APP_ERROR, "Revoke failed — see debug log for details.")
         if not ok:
             return action_result.set_status(
                 phantom.APP_ERROR, f"Token {token_id} not found or already revoked.")
