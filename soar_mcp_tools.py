@@ -163,7 +163,14 @@ class SoarApiClient:
         if resp.status_code == 401:
             return None, "Authentication failed (HTTP 401). Check ph-auth-token in the MCP client config."
         if resp.status_code == 403:
-            return None, "Access denied (HTTP 403). Token may lack required permissions."
+            # Surface SOAR's actual response body — do not swallow it.
+            # The caller (e.g. tool_import_playbook) adds context-specific guidance.
+            try:
+                err_body = resp.json()
+                msg = err_body.get("message") or err_body.get("error") or resp.text[:300]
+            except Exception:
+                msg = resp.text[:300]
+            return None, f"Access denied (HTTP 403): {msg}"
         if resp.status_code == 404:
             return None, "Resource not found (HTTP 404)."
         if resp.status_code >= 400:
@@ -1682,10 +1689,20 @@ def tool_import_playbook(client: SoarApiClient, config: McpServerConfig, args: d
         if "403" in str(err):
             return (
                 f"Error importing playbook: {err}\n\n"
-                "Required SOAR role: 'Automation Engineer' or 'Administrator'.\n"
-                "The archive is valid — this is a token permission issue.\n"
-                "Fix: Administration → User Management → Users → assign the token user "
-                "to the 'Automation Engineer' role, then retry."
+                f"Diagnostics (scm_arg={scm_arg!r}, resolved_scm={resolved_scm!r}):\n"
+                "SOAR returned 403 — the raw SOAR message is shown above.\n"
+                "Possible causes:\n"
+                "  1. Role on Automation-type user: SOAR may require the role to be set\n"
+                "     under Administration → User Management → Automation → Edit User,\n"
+                "     not just under the regular Users list. Automation users are a\n"
+                "     separate user type and role assignment may not propagate automatically.\n"
+                "  2. Endpoint permission: `POST /rest/import_playbook` may require the\n"
+                "     'Automation Engineer' role specifically (not just Administrator).\n"
+                "     Try adding 'Automation Engineer' alongside the existing role.\n"
+                "  3. SCM mismatch: scm field sent was {resolved_scm!r}. If SOAR logs\n"
+                "     show an SCM error, pass an explicit scm=<id> matching GET /rest/scm.\n"
+                "  4. Check SOAR audit log (Administration → Audit) for the detailed\n"
+                "     rejection reason — it shows the exact permission check that failed."
             )
         if "400" in str(err):
             return (
