@@ -149,6 +149,10 @@ class McpServerConfig:
     min_severity: str = ""
     # Extra gate for create_container — prevents accidental case creation in production
     enable_test_harness: bool = False
+    # Two-step commit for write tools (issue #50). When true, write tools must be
+    # called twice: the first call returns a confirm_token, the second (with the
+    # same args + token) executes. Default off = backwards-compatible.
+    require_confirmation: bool = False
 
     # AI instructions — sent to the LLM in every MCP initialize response
     ai_instructions: str = ""
@@ -273,6 +277,7 @@ class McpConfigLoader:
         raw_sev = parser.get("safety", "min_severity", fallback="").strip().lower()
         config.min_severity = raw_sev if raw_sev in _VALID_SEVERITIES else ""
         config.enable_test_harness = self._get_bool(parser, "safety", "enable_test_harness", False)
+        config.require_confirmation = self._get_bool(parser, "safety", "require_confirmation", False)
 
         # ── [server] ai_instructions ───────────────────────────────────────────
         config.ai_instructions = parser.get("server", "ai_instructions", fallback="").strip()

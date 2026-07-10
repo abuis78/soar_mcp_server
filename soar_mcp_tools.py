@@ -20,15 +20,19 @@ Copyright 2026 Andreas Buis
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import re
+import secrets
 import textwrap
+import threading
+import time
 from typing import Any, Optional
 
 import requests
 
-from soar_mcp_config import McpServerConfig
+from soar_mcp_config import READ_ONLY_TOOLS, McpServerConfig
 
 # ── Security constants ─────────────────────────────────────────────────────────
 _MAX_NOTE_LENGTH = 10_000   # characters — prevents storage exhaustion (issue #11)
@@ -3965,6 +3969,81 @@ _TOOL_HANDLERS = {
 }
 
 
+# ── Write-tool confirmation gate (issue #50) ──────────────────────────────────
+# Write tools are those with a handler that are not read-only.
+_WRITE_TOOLS: frozenset[str] = frozenset(_TOOL_HANDLERS) - READ_ONLY_TOOLS
+
+
+class _ConfirmStore:
+    """In-process, TTL-bound confirmation tokens keyed on (tool, args).
+
+    Per-process only (like the token rate limiter); a confirm token issued on
+    one worker is not valid on another. That is acceptable — worst case the
+    client is asked to confirm again.
+    """
+
+    def __init__(self) -> None:
+        self._d: dict[str, tuple[str, float]] = {}
+        self._lock = threading.Lock()
+
+    @staticmethod
+    def _key(tool: str, args: dict) -> str:
+        blob = tool + "|" + json.dumps(args, sort_keys=True, default=str)
+        return hashlib.sha256(blob.encode()).hexdigest()
+
+    def issue(self, tool: str, args: dict, ttl: float = 300.0) -> str:
+        token = "confirm_" + secrets.token_urlsafe(9)
+        with self._lock:
+            self._d[token] = (self._key(tool, args), time.time() + ttl)
+        return token
+
+    def consume(self, token: str, tool: str, args: dict) -> bool:
+        with self._lock:
+            entry = self._d.get(token)
+            if not entry:
+                return False
+            key, exp = entry
+            if time.time() > exp or key != self._key(tool, args):
+                self._d.pop(token, None)
+                return False
+            self._d.pop(token, None)
+            return True
+
+
+_confirm_store = _ConfirmStore()
+
+
+def _maybe_require_confirmation(
+    tool_name: str, arguments: dict, config: McpServerConfig
+) -> Optional[str]:
+    """Return a confirmation-preview string if the call must be confirmed first,
+    or None to proceed. Two-step commit for write tools when
+    require_confirmation is enabled (issue #50)."""
+    if not getattr(config, "require_confirmation", False):
+        return None
+    if tool_name not in _WRITE_TOOLS:
+        return None
+    # Layout dry-run preview is read-only and safe — no confirmation needed.
+    if tool_name == "save_playbook_layout_only" and arguments.get("dry_run", True):
+        return None
+
+    key_args = {k: v for k, v in arguments.items() if k != "confirm_token"}
+    provided = arguments.get("confirm_token")
+    if provided and _confirm_store.consume(str(provided), tool_name, key_args):
+        return None  # confirmed — proceed
+
+    token = _confirm_store.issue(tool_name, key_args)
+    return (
+        "⚠️ Confirmation required — this SOAR MCP instance has require_confirmation "
+        "enabled for write operations.\n"
+        f"  Tool:      {tool_name}\n"
+        f"  Arguments: {json.dumps(key_args, default=str)[:400]}\n\n"
+        f"To execute, call {tool_name} again with the SAME arguments plus:\n"
+        f'  confirm_token = "{token}"\n'
+        "The token is valid for 5 minutes and only for these exact arguments."
+    )
+
+
 def call_tool(
     tool_name: str,
     arguments: dict,
@@ -3980,6 +4059,9 @@ def call_tool(
     handler = _TOOL_HANDLERS.get(tool_name)
     if handler is None:
         return f"Unknown tool: '{tool_name}'"
+    gate = _maybe_require_confirmation(tool_name, arguments or {}, config)
+    if gate is not None:
+        return gate
     try:
         result = handler(client, config, arguments or {})
         if config.log_tool_calls:
