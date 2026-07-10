@@ -108,6 +108,7 @@ path segment is the SOAR asset name, for example `mcp`.
 |-------|---------|-------------|
 | **AI Instructions** | _(empty)_ | Additional context sent to the AI on every MCP session. Describe your SOAR environment, naming conventions, severity triage rules, escalation procedures. |
 | **enable_test_harness** | `false` | Enable the built-in playbook self-test harness (`create_container` tool). Same effect as `enable_test_harness = true` in `mcp.conf [safety]` — no SSH required. **Never enable on production.** |
+| **ssl_verify** | `true` | Verify TLS certificates for SOAR API calls. Disable only for lab/test instances with self-signed certificates — never on production. |
 | **scoped_tokens_enabled** | `false` | Enable per-user, revocable scoped MCP tokens (v1.5.0+). |
 | **scoped_tokens_required** | `false` | Reject requests that do not present a valid scoped token. |
 
