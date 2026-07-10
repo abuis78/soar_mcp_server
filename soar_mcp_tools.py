@@ -2042,29 +2042,50 @@ def _resolve_current_id(
         or coa_data.get("id")
         or pid
     )
-    return int(raw_current), coa_data, None
+    current_id = int(raw_current)
+
+    # SOAR 8.5 can return current_id while still returning the old revision's
+    # graph for /coa/playbooks/<old_id>. Refetch the current draft payload before
+    # any COA graph analysis so stale URLs do not poison downstream checks.
+    if current_id != pid:
+        current_data, current_err = client._coa_get(f"playbooks/{current_id}")
+        if not current_err and isinstance(current_data, dict):
+            return current_id, current_data, None
+
+    return current_id, coa_data, None
 
 
 def _get_coa_nodes_edges(coa_data: dict) -> tuple[list, list]:
     """
     Extract nodes and edges from a COA graph response.
 
-    Known shapes (issue #30 — second fix):
+    Known shapes:
       A) export archive JSON:   coa_data["coa"]["data"]["nodes"]
       B) live /coa/playbooks/{id} on SOAR 8.5 (no outer "coa" wrapper):
                                 coa_data["data"]["nodes"]
       C) flat top-level:        coa_data["nodes"]
+      D) older SOAR 8.5 hotfix shape:
+                                coa_data["coa_data"]["nodes"]
 
     Nodes may be a dict keyed by string node-id — normalised to list.
     Edges field may be "connections" or "edges".
     """
     coa_sub = coa_data.get("coa") or {}
+    coa_data_sub = coa_data.get("coa_data") or {}
+    if isinstance(coa_data_sub, str):
+        try:
+            coa_data_sub = json.loads(coa_data_sub)
+        except Exception:
+            coa_data_sub = {}
+    if not isinstance(coa_data_sub, dict):
+        coa_data_sub = {}
 
-    # data_sub: prefer shape A (coa.data), then shape B (data at top level)
-    data_sub = coa_sub.get("data") or coa_data.get("data") or {}
+    # data_sub: prefer shape A (coa.data), then B (top-level data), then D.
+    data_sub = coa_sub.get("data") or coa_data.get("data") or coa_data_sub or {}
 
     nodes_raw = (
         data_sub.get("nodes")        # shapes A and B
+        or coa_data_sub.get("nodes") # shape D
         or coa_sub.get("nodes")      # coa.nodes (uncommon fallback)
         or coa_data.get("nodes")     # shape C
         or {}
@@ -2078,13 +2099,61 @@ def _get_coa_nodes_edges(coa_data: dict) -> tuple[list, list]:
 
     edges_raw = (
         data_sub.get("connections") or data_sub.get("edges")
+        or coa_data_sub.get("connections") or coa_data_sub.get("edges")
         or coa_sub.get("connections") or coa_sub.get("edges")
         or coa_data.get("connections") or coa_data.get("edges")
         or coa_data.get("links")
         or []
     )
     edges: list = edges_raw if isinstance(edges_raw, list) else []
-    return nodes, edges
+
+    def _issue_list(value: Any) -> list:
+        if isinstance(value, list):
+            return value
+        if isinstance(value, dict):
+            return [v for v in value.values() if v]
+        return []
+
+    normalized_nodes: list[dict] = []
+    node_name_by_id: dict[str, str] = {}
+    for raw in nodes:
+        if not isinstance(raw, dict):
+            continue
+        data = raw.get("data") if isinstance(raw.get("data"), dict) else {}
+        rec = dict(data) if data else dict(raw)
+
+        node_id = raw.get("id", rec.get("id"))
+        if node_id is not None:
+            rec["id"] = node_id
+            rec["node_id"] = node_id
+        rec["x"] = raw.get("x", rec.get("x", 0))
+        rec["y"] = raw.get("y", rec.get("y", 0))
+        rec["warnings"] = _issue_list(raw.get("warnings", rec.get("warnings", [])))
+        rec["errors"] = _issue_list(raw.get("errors", rec.get("errors", [])))
+        if "userCode" in raw and "userCode" not in rec:
+            rec["userCode"] = raw.get("userCode")
+
+        fn_name = rec.get("functionName") or rec.get("function_name") or rec.get("name") or ""
+        if node_id is not None:
+            node_name_by_id[str(node_id)] = str(fn_name)
+        normalized_nodes.append(rec)
+
+    normalized_edges: list[dict] = []
+    for raw in edges:
+        if not isinstance(raw, dict):
+            continue
+        rec = dict(raw)
+        src_id = rec.get("source") or rec.get("source_id") or rec.get("from") or rec.get("sourceNode")
+        tgt_id = rec.get("target") or rec.get("target_id") or rec.get("to") or rec.get("targetNode")
+        if src_id is not None:
+            rec["source"] = src_id
+            rec.setdefault("source_function", node_name_by_id.get(str(src_id), str(src_id)))
+        if tgt_id is not None:
+            rec["target"] = tgt_id
+            rec.setdefault("target_function", node_name_by_id.get(str(tgt_id), str(tgt_id)))
+        normalized_edges.append(rec)
+
+    return normalized_nodes, normalized_edges
 
 
 def _coa_shape_debug(coa_data: dict) -> dict:
@@ -2465,7 +2534,13 @@ def tool_get_playbook_coa_summary(
     passed_validation = rest_data.get("passed_validation", coa_data.get("passed_validation", False))
     # VERIFY: playbook_type / trigger field names
     playbook_type = rest_data.get("playbook_type") or coa_data.get("playbook_type", "")
-    trigger = rest_data.get("trigger") or coa_data.get("trigger", "")
+    trigger = (
+        rest_data.get("playbook_trigger")
+        or rest_data.get("trigger")
+        or coa_data.get("playbook_trigger")
+        or coa_data.get("trigger")
+        or ""
+    )
 
     findings = []
     if warning_count:
