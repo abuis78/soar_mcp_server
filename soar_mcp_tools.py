@@ -2039,6 +2039,71 @@ def _coa_shape_debug(coa_data: dict) -> dict:
     }
 
 
+def _get_graph_from_export(client: "SoarApiClient", playbook_id: int) -> tuple[list, list]:
+    """
+    Extract COA nodes + edges from the export archive.
+
+    SOAR 8.5: GET /coa/playbooks/{id} returns only the envelope
+    (inputSpec, outputSpec, python, metadata) — the node/edge graph is
+    absent even for VPE-native playbooks.  The export archive always
+    contains the full graph at coa.data.nodes (dict) + coa.data.edges (list).
+
+    Archive structure (confirmed via issue #30 retest):
+        <name>.json → { "coa": { "data": { "nodes": {...}, "edges": [...] } } }
+    """
+    import io as _io_g
+    import json as _json_g
+    import tarfile as _tarfile_g
+
+    content, _ = client.get_binary(f"playbook/{playbook_id}/export")
+    if not content:
+        return [], []
+    try:
+        buf = _io_g.BytesIO(content)
+        with _tarfile_g.open(fileobj=buf, mode="r:*") as tarf:
+            for member in tarf.getmembers():
+                if not member.name.endswith(".json"):
+                    continue
+                fobj = tarf.extractfile(member)
+                if not fobj:
+                    continue
+                raw = fobj.read()
+                try:
+                    doc = _json_g.loads(raw.decode("utf-8"))
+                except Exception:
+                    continue
+                coa_sub = doc.get("coa") or {}
+                data_sub = coa_sub.get("data") or {}
+                nodes_raw = data_sub.get("nodes") or {}
+                if not nodes_raw:
+                    continue  # try next JSON file in archive
+                nodes = list(nodes_raw.values()) if isinstance(nodes_raw, dict) else (
+                    nodes_raw if isinstance(nodes_raw, list) else []
+                )
+                edges_raw = data_sub.get("edges") or data_sub.get("connections") or []
+                edges = edges_raw if isinstance(edges_raw, list) else []
+                return nodes, edges
+    except Exception:
+        pass
+    return [], []
+
+
+def _get_graph(
+    client: "SoarApiClient", playbook_id: int, coa_data: dict
+) -> tuple[list, list]:
+    """
+    Return (nodes, edges) for a playbook.
+
+    Tries the live COA response first; falls back to the export archive
+    when the live endpoint returns an empty graph (SOAR 8.5 behaviour —
+    issue #30 third-pass fix).
+    """
+    nodes, edges = _get_coa_nodes_edges(coa_data)
+    if not nodes:
+        nodes, edges = _get_graph_from_export(client, playbook_id)
+    return nodes, edges
+
+
 def _extract_python_from_coa(nodes: list) -> Optional[str]:
     """
     Reconstruct a Python payload from COA userCode blocks.
@@ -2300,7 +2365,7 @@ def tool_get_playbook_coa_summary(
     elif rest_err:
         errors.append({"source": "rest", "message": rest_err})
 
-    nodes, edges = _get_coa_nodes_edges(coa_data)
+    nodes, edges = _get_graph(client, current_id, coa_data)
 
     # VERIFY: customName field path inside node — may be node["advanced"]["customName"]
     custom_name_count = sum(
@@ -2413,7 +2478,7 @@ def tool_list_playbook_nodes(
     if err:
         errors.append({"source": "coa", "message": err})
 
-    nodes, _ = _get_coa_nodes_edges(coa_data)
+    nodes, _ = _get_graph(client, current_id, coa_data)
 
     node_records = []
     for n in nodes:
@@ -2488,7 +2553,7 @@ def tool_list_playbook_edges(
     if err:
         errors.append({"source": "coa", "message": err})
 
-    _, edges = _get_coa_nodes_edges(coa_data)
+    _, edges = _get_graph(client, current_id, coa_data)
 
     edge_records = []
     for e in edges:
@@ -2555,7 +2620,7 @@ def tool_check_saved_generated_python_drift(
     if err:
         errors.append({"source": "coa", "message": err})
 
-    nodes, _ = _get_coa_nodes_edges(coa_data)
+    nodes, _ = _get_graph(client, current_id, coa_data)
 
     # Collect COA userCode blocks from code-type nodes
     # VERIFY: field name "userCode" inside a code node — may be "user_code" or "code"
@@ -3033,7 +3098,7 @@ def tool_validate_playbook_bundle(
         })
 
     # Check 3 — COA node warnings
-    nodes, _ = _get_coa_nodes_edges(coa_data)
+    nodes, _ = _get_graph(client, current_id, coa_data)
     w_count = sum(
         1 for n in nodes
         if isinstance(n.get("warnings"), list) and len(n["warnings"]) > 0
@@ -3221,7 +3286,7 @@ def tool_check_visual_editor_compat(
         })
 
     # Step 2 — COA summary (node/edge counts, custom names, warnings, errors)
-    nodes, edges = _get_coa_nodes_edges(coa_data)
+    nodes, edges = _get_graph(client, current_id, coa_data)
     custom_name_count = sum(
         1 for n in nodes
         if (n.get("advanced") or {}).get("customName") or n.get("customName")
