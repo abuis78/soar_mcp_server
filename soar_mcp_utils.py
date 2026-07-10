@@ -48,7 +48,9 @@ def redact_nested(obj: Any, *, depth: int = 0, max_depth: int = 10) -> Any:
     if isinstance(obj, dict):
         result: dict = {}
         for k, v in obj.items():
-            if isinstance(k, str) and k.lower() in _SENSITIVE_KEYS:
+            # Substring match (issue #54): catches raw_token, shell_export_hint,
+            # access_token, etc. — not just exact key names.
+            if isinstance(k, str) and any(s in k.lower() for s in _SENSITIVE_KEYS):
                 result[k] = _REDACTED
             else:
                 result[k] = redact_nested(v, depth=depth + 1, max_depth=max_depth)
