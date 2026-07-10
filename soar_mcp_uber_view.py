@@ -64,14 +64,16 @@ def display_uber_view(provides, all_app_runs, context):
             endpoint = f"https://YOUR_SOAR_HOST/rest/handler/{_HANDLER_DIR}/YOUR_ASSET_NAME"
 
         # ── 5. Auth token ─────────────────────────────────────────────────────
-        auth_token = (
-            overrides.get("auth_token")
-            or data.get("auth_token")
-            or "YOUR_SOAR_AUTH_TOKEN"
-        )
+        # Security: NEVER render the live SOAR ph-auth-token into the widget.
+        # It is a full-access credential; embedding it in the DOM exposes it to
+        # anyone with widget access (screenshots, browser history, shoulder
+        # surfing). Always emit a placeholder — the analyst pastes their token.
+        auth_token = "YOUR_SOAR_AUTH_TOKEN"
 
         # ── 6. Has live data? ─────────────────────────────────────────────────
-        has_data = bool(soar_base and asset_name and auth_token != "YOUR_SOAR_AUTH_TOKEN")
+        # Endpoint is "live" once base_url + asset_name are known; the token is
+        # deliberately not part of this check anymore.
+        has_data = bool(soar_base and asset_name)
 
         enabled = list(data.get("enabled_tools", _DEFAULT_ENABLED))
         disabled = list(data.get("disabled_tools",

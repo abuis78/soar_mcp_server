@@ -106,7 +106,9 @@ class SoarMcpConnector(BaseConnector):
                 resp = _req.get(
                     f"{self._base_url}/rest/asset/{asset_id}",
                     headers={"ph-auth-token": self._auth_token},
-                    verify=False,
+                    # Respect configured ssl_verify instead of hardcoding False.
+                    # Defaults to True (fail-secure) before asset overrides load.
+                    verify=get_config().ssl_verify,
                     timeout=10,
                 )
                 if resp.status_code == 200:
@@ -161,6 +163,10 @@ class SoarMcpConnector(BaseConnector):
         if self._base_url and self._asset_name:
             mcp_endpoint = build_mcp_endpoint(self._base_url, self._asset_name)
 
+        # Security: the SOAR auth_token is intentionally NOT persisted here.
+        # It is resolved per-request by the handler from the incoming header
+        # (soar_mcp_handler.py) and must never be written to disk in cleartext
+        # or rendered into a widget. Config-builder widgets show a placeholder.
         overrides = {
             "tools": tool_overrides,
             "ai_instructions": ai_instructions,
@@ -168,7 +174,6 @@ class SoarMcpConnector(BaseConnector):
             "ssl_verify": ssl_verify,
             "asset_name": self._asset_name,
             "base_url": self._base_url,
-            "auth_token": self._auth_token,
             "mcp_endpoint": mcp_endpoint,
         }
 
@@ -281,10 +286,12 @@ class SoarMcpConnector(BaseConnector):
         asset = self._asset_name or "<asset_name>"
         mcp_endpoint = build_mcp_endpoint(soar_host, asset)
 
-        # Include connection details so the widget can render copy-ready config
+        # Include connection details so the widget can render copy-ready config.
+        # Security: never include the real auth_token in the action result — it
+        # would be persisted in the SOAR DB and rendered into the widget. The
+        # widget uses a placeholder; the analyst pastes their own token.
         summary["mcp_endpoint"] = mcp_endpoint
         summary["base_url"] = self._base_url
-        summary["auth_token"] = self._auth_token
 
         action_result.add_data(summary)
         action_result.set_summary({
