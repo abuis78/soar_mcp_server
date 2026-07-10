@@ -237,6 +237,13 @@
             "required": false,
             "order": 61
         },
+        "tool_delete_container": {
+            "description": "WRITE \u26a0\ufe0f \u2014 delete_container: Delete a test container to clean up after self-tests. Requires the test harness enabled; refuses non-'test' containers unless confirm=true. Never enable on production.",
+            "data_type": "boolean",
+            "default": false,
+            "required": false,
+            "order": 62
+        },
         "tool_resolve_playbook_current_id": {
             "description": "READ \u2014 resolve_playbook_current_id: Resolve any playbook ID (current or stale) to the current Visual Editor draft. Foundation tool for all COA-based operations.",
             "data_type": "boolean",

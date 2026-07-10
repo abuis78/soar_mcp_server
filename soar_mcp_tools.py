@@ -147,6 +147,19 @@ class SoarApiClient:
         except Exception as e:
             return None, f"Unexpected error: {type(e).__name__}"
 
+    def delete(self, path: str) -> tuple[dict | None, str | None]:
+        """DELETE request. Returns (data, error_message)."""
+        url = f"{self._base_url}/rest/{path.lstrip('/')}"
+        try:
+            resp = self._session.delete(url, timeout=self._config.timeout)
+            return self._handle_response(resp)
+        except requests.exceptions.Timeout:
+            return None, f"SOAR REST API timed out after {self._config.timeout}s"
+        except requests.exceptions.ConnectionError as e:
+            return None, f"Connection error: {e}"
+        except Exception as e:
+            return None, f"Unexpected error: {type(e).__name__}"
+
     def get_binary(self, path: str, params: dict | None = None) -> tuple[bytes | None, str | None]:
         """GET request returning raw bytes (for binary endpoints like playbook export)."""
         url = f"{self._base_url}/rest/{path.lstrip('/')}"
@@ -1757,6 +1770,45 @@ def tool_create_container(client: SoarApiClient, config: McpServerConfig, args: 
         f"  Container ID: {container_id}\n"
         f"  Name: {name}\n"
         f"  Label: {label} | Severity: {severity}"
+    ) + (_disclaimer() if config.advisory_disclaimer else "")
+
+
+def tool_delete_container(client: SoarApiClient, config: McpServerConfig, args: dict) -> str:
+    """Delete a test container — closes the create→test→cleanup loop (issue #66)."""
+    # Same double gate as create_container: never allow deletion unless the test
+    # harness is explicitly enabled, so real production cases can't be removed.
+    if not getattr(config, "enable_test_harness", False):
+        return (
+            "Error: delete_container requires the test harness to be enabled. "
+            "Enable it via the 'enable_test_harness' checkbox in the asset "
+            "configuration (Apps → SOAR MCP Server → Asset Settings) and run "
+            "Test Connectivity. Never enable on a production SOAR instance."
+        )
+
+    container_id, err_msg = _require_positive_int(args.get("container_id"), "container_id")
+    if err_msg:
+        return err_msg
+
+    # Safety: refuse to delete a container that is not a recognisable test
+    # container unless the caller explicitly forces it. create_container writes
+    # a "test" label by default; require confirm=true to delete anything else.
+    confirm = bool(args.get("confirm", False))
+    existing, _ = client.get(f"container/{container_id}")
+    if isinstance(existing, dict):
+        label = (existing.get("label") or "").lower()
+        if label != "test" and not confirm:
+            return (
+                f"Refusing to delete container #{container_id}: its label is "
+                f"'{existing.get('label') or 'none'}', not 'test'. This does not look "
+                "like an MCP test container. Re-call with confirm=true if you are sure."
+            )
+
+    data, err = client.delete(f"container/{container_id}")
+    if err:
+        return f"Error deleting container {container_id}: {err}"
+
+    return (
+        f"✅ Test container #{container_id} deleted."
     ) + (_disclaimer() if config.advisory_disclaimer else "")
 
 
@@ -3848,6 +3900,22 @@ TOOL_SCHEMAS["generate_mcp_client_config"] = {
     "inputSchema": {"type": "object", "properties": {}},
 }
 
+TOOL_SCHEMAS["delete_container"] = {
+    "description": (
+        "WRITE — Delete a test container by ID to clean up after playbook self-tests. "
+        "Requires the test harness to be enabled. Refuses to delete containers not "
+        "labelled 'test' unless confirm=true. Never use on production."
+    ),
+    "inputSchema": {
+        "type": "object",
+        "properties": {
+            "container_id": {"type": "integer", "description": "The test container/case ID to delete."},
+            "confirm": {"type": "boolean", "description": "Delete even if the label is not 'test' (default false).", "default": False},
+        },
+        "required": ["container_id"],
+    },
+}
+
 
 _TOOL_HANDLERS = {
     "list_cases": tool_list_cases,
@@ -3892,6 +3960,8 @@ _TOOL_HANDLERS = {
     "save_playbook_layout_only": tool_save_playbook_layout_only,
     # Client config helper (v1.8.0+)
     "generate_mcp_client_config": tool_generate_mcp_client_config,
+    # Test-harness cleanup (v1.8.0+)
+    "delete_container": tool_delete_container,
 }
 
 
