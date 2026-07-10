@@ -1641,7 +1641,8 @@ def tool_import_playbook(client: SoarApiClient, config: McpServerConfig, args: d
     """Import a playbook archive into SOAR (POST /rest/import_playbook)."""
     import base64 as _b64
 
-    archive_b64 = (args.get("archive_b64") or "").strip()
+    # Strip ALL whitespace (incl. internal newlines MCP transport may inject)
+    archive_b64 = "".join((args.get("archive_b64") or "").split())
     if not archive_b64:
         return "Error: archive_b64 is required."
 
@@ -1650,16 +1651,31 @@ def tool_import_playbook(client: SoarApiClient, config: McpServerConfig, args: d
     except Exception:
         return "Error: archive_b64 is not valid base64."
 
-    scm = (args.get("scm") or "local").strip()
+    scm_arg = (args.get("scm") or "local").strip()
     force = bool(args.get("force", False))
 
-    # VERIFY: field name 'scm' vs 'scm_id' on SOAR 8.5.
-    # The SOAR REST reference (Appendix A) uses 'scm'; 'scm_id' is an alias on some versions.
-    body: dict = {
-        "playbook": archive_b64,
-        "scm": scm,
-        "force": force,
-    }
+    # Auto-detect local SCM id from SOAR so we don't send the literal string "local".
+    # SOAR 8.5 rejects unknown SCM names with HTTP 400 (issue #32 root cause).
+    resolved_scm: Optional[str] = None
+    if scm_arg.lower() in ("local", ""):
+        scm_list, _ = client.get("scm")
+        candidates: list = []
+        if isinstance(scm_list, list):
+            candidates = scm_list
+        elif isinstance(scm_list, dict):
+            candidates = scm_list.get("data") or []
+        for s in candidates:
+            if not isinstance(s, dict):
+                continue
+            if s.get("type", "").lower() in ("local", "git"):
+                resolved_scm = str(s.get("id") or s.get("name") or "")
+                break
+    else:
+        resolved_scm = scm_arg
+
+    body: dict = {"playbook": archive_b64, "force": force}
+    if resolved_scm:
+        body["scm"] = resolved_scm
 
     data, err = client.post("import_playbook", body)
     if err:
@@ -1670,6 +1686,18 @@ def tool_import_playbook(client: SoarApiClient, config: McpServerConfig, args: d
                 "The archive is valid — this is a token permission issue.\n"
                 "Fix: Administration → User Management → Users → assign the token user "
                 "to the 'Automation Engineer' role, then retry."
+            )
+        if "400" in str(err):
+            return (
+                f"Error importing playbook (HTTP 400): {err}\n\n"
+                f"Diagnostics:\n"
+                f"  scm_arg={scm_arg!r}, resolved_scm={resolved_scm!r}\n"
+                "Possible causes:\n"
+                "  1. Unresolvable SCM — check /rest/scm for valid ids and pass scm=<id>.\n"
+                "  2. Archive format — SOAR expects gzip-tar (.tgz); verify archive_b64 "
+                "is from export_playbook (not a .zip or raw .tar).\n"
+                "  3. Duplicate name + force=False — retry with force=True.\n"
+                "  4. Role insufficient — ensure user has 'Automation Engineer' role."
             )
         return f"Error importing playbook: {err}"
 
@@ -1962,23 +1990,26 @@ def _get_coa_nodes_edges(coa_data: dict) -> tuple[list, list]:
     """
     Extract nodes and edges from a COA graph response.
 
-    Live SOAR 8.5 shape (confirmed via export archive / issue #30):
-        coa_data["coa"]["data"]["nodes"]  → dict keyed by functionId
-        coa_data["coa"]["data"]["edges"]  → list (or "connections")
+    Known shapes (issue #30 — second fix):
+      A) export archive JSON:   coa_data["coa"]["data"]["nodes"]
+      B) live /coa/playbooks/{id} on SOAR 8.5 (no outer "coa" wrapper):
+                                coa_data["data"]["nodes"]
+      C) flat top-level:        coa_data["nodes"]
 
-    Also handles flatter shapes from COA REST vs. export archive differences.
+    Nodes may be a dict keyed by string node-id — normalised to list.
+    Edges field may be "connections" or "edges".
     """
     coa_sub = coa_data.get("coa") or {}
-    data_sub = coa_sub.get("data") or {}
 
-    # Nodes: try deep path first, then shallower fallbacks
+    # data_sub: prefer shape A (coa.data), then shape B (data at top level)
+    data_sub = coa_sub.get("data") or coa_data.get("data") or {}
+
     nodes_raw = (
-        data_sub.get("nodes")
-        or coa_sub.get("nodes")
-        or coa_data.get("nodes")
+        data_sub.get("nodes")        # shapes A and B
+        or coa_sub.get("nodes")      # coa.nodes (uncommon fallback)
+        or coa_data.get("nodes")     # shape C
         or {}
     )
-    # Nodes may be a dict keyed by functionId — normalize to list
     if isinstance(nodes_raw, dict):
         nodes: list = list(nodes_raw.values())
     elif isinstance(nodes_raw, list):
@@ -1986,7 +2017,6 @@ def _get_coa_nodes_edges(coa_data: dict) -> tuple[list, list]:
     else:
         nodes = []
 
-    # Edges: same depth strategy; field may be "connections" or "edges"
     edges_raw = (
         data_sub.get("connections") or data_sub.get("edges")
         or coa_sub.get("connections") or coa_sub.get("edges")
@@ -1996,6 +2026,17 @@ def _get_coa_nodes_edges(coa_data: dict) -> tuple[list, list]:
     )
     edges: list = edges_raw if isinstance(edges_raw, list) else []
     return nodes, edges
+
+
+def _coa_shape_debug(coa_data: dict) -> dict:
+    """Return top-level and data-sub keys for diagnostics when node_count==0."""
+    top_keys = list(coa_data.keys()) if isinstance(coa_data, dict) else []
+    data_sub = (coa_data.get("coa") or {}).get("data") or coa_data.get("data") or {}
+    return {
+        "coa_top_keys": top_keys,
+        "coa_data_sub_keys": list(data_sub.keys()),
+        "note": "node_count=0: paste these keys in issue #30 to identify correct path",
+    }
 
 
 def _extract_python_from_coa(nodes: list) -> Optional[str]:
@@ -2313,6 +2354,33 @@ def tool_get_playbook_coa_summary(
         findings.append({"severity": "warn", "code": "validation_failed",
                          "message": "passed_validation is false on REST record."})
 
+    data_block: dict = {
+        "input_id": pid,
+        "current_id": current_id,
+        "is_current": (current_id == pid),
+        "name": name,
+        "version": version,
+        "playbook_type": playbook_type,
+        "trigger": trigger,
+        "active": active,
+        "draft_mode": draft_mode,
+        "passed_validation": passed_validation,
+        "node_count": len(nodes),
+        "edge_count": len(edges),
+        "custom_name_count": custom_name_count,
+        "warning_count": warning_count,
+        "error_count": error_count,
+        "input_spec": input_spec,
+        "output_spec": output_spec,
+        "utility_blocks": utility_blocks,
+        "lookup_source": "/coa/playbooks/" + str(current_id) if not err else "rest_only",
+    }
+
+    # Diagnostic: surface raw COA response shape when node_count is 0 so
+    # the caller can identify the correct traversal path (issue #30 follow-up).
+    if len(nodes) == 0 and not err:
+        data_block["_coa_shape_debug"] = _coa_shape_debug(coa_data)
+
     result = {
         "ok": len(errors) == 0,
         "summary": (
@@ -2320,27 +2388,7 @@ def tool_get_playbook_coa_summary(
             f"{len(nodes)} nodes, {len(edges)} edges, "
             f"{warning_count} warnings, {error_count} errors."
         ),
-        "data": {
-            "input_id": pid,
-            "current_id": current_id,
-            "is_current": (current_id == pid),
-            "name": name,
-            "version": version,
-            "playbook_type": playbook_type,
-            "trigger": trigger,
-            "active": active,
-            "draft_mode": draft_mode,
-            "passed_validation": passed_validation,
-            "node_count": len(nodes),
-            "edge_count": len(edges),
-            "custom_name_count": custom_name_count,
-            "warning_count": warning_count,
-            "error_count": error_count,
-            "input_spec": input_spec,
-            "output_spec": output_spec,
-            "utility_blocks": utility_blocks,
-            "lookup_source": "/coa/playbooks/" + str(current_id) if not err else "rest_only",
-        },
+        "data": data_block,
         "findings": findings,
         "errors": errors,
     }
@@ -2998,7 +3046,13 @@ def tool_validate_playbook_bundle(
     })
 
     # Check 4 — Python py_compile (AST-only, no execution)
-    # SOAR 8.5: Python is not a REST field; reconstruct from COA userCode blocks (#31 fix).
+    # SOAR 8.5: Python is not a REST field.  Priority order:
+    #   1. REST code field (rarely populated, kept for completeness)
+    #   2. COA userCode blocks (code-type nodes only)
+    #   3. Export archive .py file — covers action/decision/utility-only playbooks (#31 fix)
+    import io as _io
+    import tarfile as _tarfile
+
     saved_python = None
     python_source = None
     if isinstance(rest_data, dict):
@@ -3013,14 +3067,33 @@ def tool_validate_playbook_bundle(
         saved_python = _extract_python_from_coa(nodes)
         if saved_python:
             python_source = "coa_usercode"
+    if not saved_python:
+        # Fetch export archive and extract the SOAR-generated .py file.
+        # SOAR generates Python for all node types (action, decision, utility, code),
+        # so the .py in the archive covers cases where COA has no code-type nodes.
+        export_content, _ = client.get_binary(f"playbook/{current_id}/export")
+        if export_content:
+            try:
+                buf = _io.BytesIO(export_content)
+                with _tarfile.open(fileobj=buf, mode="r:*") as tarf:
+                    for member in tarf.getmembers():
+                        if member.name.endswith(".py"):
+                            fobj = tarf.extractfile(member)
+                            if fobj:
+                                saved_python = fobj.read().decode("utf-8", errors="replace")
+                                python_source = "export_archive"
+                                break
+            except Exception:
+                pass  # archive extraction failed — proceed without compile check
 
     if not saved_python:
         checks.append({
             "name": "python_compile",
             "status": "skipped",
             "message": (
-                "No Python payload found — REST record has no code field and "
-                "COA contains no code-type nodes with userCode."
+                "No Python payload found — REST record has no code field, "
+                "COA contains no code-type nodes with userCode, "
+                "and export archive extraction failed or returned no .py file."
             ),
             "details": {},
         })
