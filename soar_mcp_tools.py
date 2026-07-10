@@ -391,6 +391,10 @@ TOOL_SCHEMAS: dict[str, dict] = {
         "inputSchema": {
             "type": "object",
             "properties": {
+                "name_contains": {
+                    "type": "string",
+                    "description": "Optional case-insensitive filter on the playbook name (substring).",
+                },
                 "category": {
                     "type": "string",
                     "description": "Optional filter by playbook category.",
@@ -399,6 +403,10 @@ TOOL_SCHEMAS: dict[str, dict] = {
                     "type": "boolean",
                     "description": "Return only active playbooks (default: true).",
                     "default": True,
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Maximum number of playbooks to return (default: server max_results, max: 500).",
                 },
             },
         },
@@ -1274,12 +1282,16 @@ def tool_list_playbooks(client: SoarApiClient, config: McpServerConfig, args: di
     """List available SOAR playbooks."""
     active_only = args.get("active_only", True)
     category = args.get("category", "")
+    name_contains = args.get("name_contains", "")
+    limit = max(1, min(int(args.get("limit") or config.max_results), 500))
 
-    params: dict = {"page_size": config.max_results}
+    params: dict = {"page_size": limit}
     if active_only:
         params["_filter_active"] = "true"  # SOAR requires lowercase (bug #7)
     if category:
         params["_filter_category__icontains"] = f'"{category}"'
+    if name_contains:
+        params["_filter_name__icontains"] = f'"{name_contains}"'
 
     data, err = client.get("playbook", params=params)
     if err:
