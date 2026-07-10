@@ -99,9 +99,15 @@ def _build_record(data: dict, status: str, message: str, soar_base_url: str = ""
     if endpoint_from_data:
         mcp_endpoint = endpoint_from_data
     elif soar_base_url:
-        mcp_endpoint = f"{soar_base_url}/rest/handler/phantom_soar_mcp_server/mcp"
+        mcp_endpoint = (
+            f"{soar_base_url}/rest/handler/"
+            "soarmcpserver_ff5f68f3-353c-4d89-9767-967ef5d99117/<asset_name>"
+        )
     else:
-        mcp_endpoint = "https://YOUR_SOAR_HOST/rest/handler/phantom_soar_mcp_server/mcp"
+        mcp_endpoint = (
+            "https://YOUR_SOAR_HOST/rest/handler/"
+            "soarmcpserver_ff5f68f3-353c-4d89-9767-967ef5d99117/<asset_name>"
+        )
 
     # Compute read vs write breakdown using known write tool names
     write_enabled_count = len([t for t in enabled_tools if t in _WRITE_TOOLS])

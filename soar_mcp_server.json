@@ -46,11 +46,18 @@
             "required": false,
             "order": 1
         },
+        "ssl_verify": {
+            "description": "Verify TLS certificates for SOAR API callbacks from the MCP handler. Keep enabled for trusted/public URLs. Disable only on test instances that use a self-signed certificate.",
+            "data_type": "boolean",
+            "default": true,
+            "required": false,
+            "order": 2
+        },
         "ai_instructions": {
             "description": "Additional context sent to the AI on every MCP session (appended to the built-in instructions). Use this to describe your SOAR environment, naming conventions, severity triage rules, escalation procedures, or any SOC-specific context the AI should know. Example: 'Cases labeled phishing should always be escalated if severity is high. Owner format is firstname.lastname.'",
             "data_type": "string",
             "required": false,
-            "order": 2
+            "order": 3
         },
         "tool_list_cases": {
             "description": "READ \u2014 list_cases: List SOAR cases with status/severity/label/owner filters.",
