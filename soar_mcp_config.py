@@ -66,6 +66,7 @@ ALL_TOOLS: list[str] = [
     "export_playbook",
     "import_playbook",
     "create_container",
+    "delete_container",
     # COA Visual Editor tools (v1.6.3+)
     "resolve_playbook_current_id",
     "get_playbook_identity_map",
