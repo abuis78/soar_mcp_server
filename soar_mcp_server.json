@@ -327,6 +327,13 @@
             "default": false,
             "required": false,
             "order": 91
+        },
+        "tool_generate_mcp_client_config": {
+            "description": "READ \u2014 generate_mcp_client_config: Generate copy-ready MCP client config snippets (Claude Desktop/Code, Cursor, CLI). Token values are always placeholders, never the real auth token.",
+            "data_type": "boolean",
+            "default": true,
+            "required": false,
+            "order": 81
         }
     },
     "actions": [

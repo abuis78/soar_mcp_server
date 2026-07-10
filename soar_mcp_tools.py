@@ -3790,6 +3790,65 @@ def tool_save_playbook_layout_only(
 # Dispatcher
 # ==============================================================================
 
+def tool_generate_mcp_client_config(
+    client: SoarApiClient, config: McpServerConfig, args: dict
+) -> str:
+    """Generate copy-safe MCP client config snippets (issue #72).
+
+    Read-only. Uses the real handler endpoint but ALWAYS a placeholder token —
+    never the configured asset auth_token (that would leak a credential).
+    """
+    import json as _json
+
+    endpoint = (
+        config.mcp_endpoint
+        or f"{client._base_url}/rest/handler/<soarmcpserver_appid>/<asset_name>"
+    )
+    ph = "YOUR_SOAR_AUTH_TOKEN"        # placeholder — never a real token
+    env = "${env:SOAR_MCP_TOKEN}"      # env-var reference for Cursor/shell setups
+
+    claude_desktop = {"mcpServers": {"splunk-soar": {
+        "url": endpoint, "headers": {"ph-auth-token": ph}}}}
+    claude_code = {"mcpServers": {"splunk-soar": {
+        "type": "http", "url": endpoint, "headers": {"ph-auth-token": ph}}}}
+    cursor = {"mcpServers": {"splunk-soar": {
+        "url": endpoint, "headers": {"ph-auth-token": env}}}}
+    cli = (f'claude mcp add --transport http splunk-soar "{endpoint}" '
+           f'-H "ph-auth-token: {ph}"')
+
+    lines = [
+        "MCP client configuration (replace the placeholder token with your own):",
+        "",
+        "# Claude Desktop — claude_desktop_config.json",
+        _json.dumps(claude_desktop, indent=2),
+        "",
+        "# Claude Code — ~/.claude.json",
+        _json.dumps(claude_code, indent=2),
+        "",
+        "# Claude Code CLI",
+        cli,
+        "",
+        "# Cursor — ~/.cursor/mcp.json (token via env var; run: "
+        'export SOAR_MCP_TOKEN="<your-token>")',
+        _json.dumps(cursor, indent=2),
+        "",
+        "Troubleshooting: 404 → check the handler path segment is your asset name; "
+        "401 → token invalid; SSL error → self-signed cert (set ssl_verify=false only "
+        "for test instances).",
+    ]
+    return "\n".join(lines)
+
+
+TOOL_SCHEMAS["generate_mcp_client_config"] = {
+    "description": (
+        "Generate copy-ready MCP client configuration snippets (Claude Desktop, "
+        "Claude Code, Cursor, CLI) for this SOAR MCP endpoint. Read-only. Token "
+        "values are always placeholders — never the real auth token."
+    ),
+    "inputSchema": {"type": "object", "properties": {}},
+}
+
+
 _TOOL_HANDLERS = {
     "list_cases": tool_list_cases,
     "get_case": tool_get_case,
@@ -3831,6 +3890,8 @@ _TOOL_HANDLERS = {
     "check_visual_editor_compat": tool_check_visual_editor_compat,
     # Write tools (v1.6.3+)
     "save_playbook_layout_only": tool_save_playbook_layout_only,
+    # Client config helper (v1.8.0+)
+    "generate_mcp_client_config": tool_generate_mcp_client_config,
 }
 
 
