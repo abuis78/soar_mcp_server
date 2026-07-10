@@ -20,6 +20,20 @@ from typing import Optional, Set, Union
 logger = logging.getLogger(__name__)
 
 _CONFIG_FILENAME = "mcp.conf"
+_MANIFEST_FILENAME = "soar_mcp_server.json"
+
+
+def _manifest_app_version() -> str:
+    """Return app_version from the manifest so the MCP server reports the real
+    version to clients instead of a hardcoded, drift-prone literal (issue #48)."""
+    try:
+        import json as _json
+        manifest = Path(__file__).parent / _MANIFEST_FILENAME
+        with open(manifest, encoding="utf-8") as fh:
+            return str(_json.load(fh).get("app_version") or "").strip() or "0.0.0"
+    except Exception:
+        return "0.0.0"
+
 
 # ── Valid values ───────────────────────────────────────────────────────────────
 _VALID_SEVERITIES = {"high", "medium", "low", "informational", ""}
@@ -118,7 +132,7 @@ class McpServerConfig:
     log_tool_calls: bool = True
     protocol_version: str = "2024-11-05"
     server_name: str = "splunk-soar-mcp-server"
-    server_version: str = "1.0.0"
+    server_version: str = field(default_factory=_manifest_app_version)
 
     # [tools] section — set of enabled tool names
     enabled_tools: Set[str] = field(default_factory=lambda: set(READ_ONLY_TOOLS))
@@ -233,7 +247,9 @@ class McpConfigLoader:
         config.log_tool_calls = self._get_bool(parser, "server", "log_tool_calls", True)
         config.protocol_version = parser.get("server", "protocol_version", fallback="2024-11-05").strip()
         config.server_name = parser.get("server", "server_name", fallback="splunk-soar-mcp-server").strip()
-        config.server_version = parser.get("server", "server_version", fallback="1.0.0").strip()
+        config.server_version = parser.get(
+            "server", "server_version", fallback=_manifest_app_version()
+        ).strip() or _manifest_app_version()
 
         # ── [tools] ───────────────────────────────────────────────────────────
         enabled: set[str] = set()
