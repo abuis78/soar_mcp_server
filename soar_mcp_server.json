@@ -149,14 +149,14 @@
         "tool_create_artifact": {
             "description": "WRITE \u26a0\ufe0f \u2014 create_artifact: Add a new artifact/IOC to a case. Required for playbook self-test.",
             "data_type": "boolean",
-            "default": true,
+            "default": false,
             "required": false,
             "order": 31
         },
         "tool_run_playbook": {
             "description": "WRITE \u26a0\ufe0f \u2014 run_playbook: Trigger a SOAR playbook on a case. Required for playbook self-test.",
             "data_type": "boolean",
-            "default": true,
+            "default": false,
             "required": false,
             "order": 32
         },
@@ -226,14 +226,14 @@
         "tool_import_playbook": {
             "description": "WRITE \u26a0\ufe0f \u2014 import_playbook: Import a base64-encoded gzip TAR playbook archive into SOAR so it appears and is editable in the VPE.",
             "data_type": "boolean",
-            "default": true,
+            "default": false,
             "required": false,
             "order": 60
         },
         "tool_create_container": {
             "description": "WRITE \u26a0\ufe0f \u2014 create_container: Create an isolated test container for playbook self-testing. Requires BOTH this checkbox AND enable_test_harness = true in [safety] of mcp.conf. Never enable on production.",
             "data_type": "boolean",
-            "default": true,
+            "default": false,
             "required": false,
             "order": 61
         },
