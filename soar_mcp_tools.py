@@ -51,6 +51,20 @@ def _require_positive_int(value: Any, name: str) -> tuple[int | None, str | None
     except (TypeError, ValueError):
         return None, f"Error: {name} must be a positive integer, got: {value!r}"
 
+
+def _safe_filter_value(value: Any, *, max_len: int = 200) -> str:
+    """Sanitize a free-text value before embedding it in a SOAR `_filter_*`
+    expression (issue #49).
+
+    The values are wrapped in double quotes and passed as `_filter_*` params;
+    an embedded quote or backslash could break out of / alter the filter
+    expression. Strip both and cap the length. Read-only tools stay within the
+    caller's token scope, so this is defensive hardening against malformed or
+    filter-manipulating input rather than privilege escalation.
+    """
+    return str(value).replace("\\", "").replace('"', "")[:max_len]
+
+
 logger = logging.getLogger(__name__)
 
 # ── SOAR severity ordering (for min_severity filtering) ───────────────────────
@@ -1101,10 +1115,10 @@ def tool_list_cases(client: SoarApiClient, config: McpServerConfig, args: dict) 
     page_size = config.max_results if scope_filtering else limit
 
     params: dict[str, Any] = {
-        "_filter_status": f'"{args["status"]}"' if args.get("status") else None,
-        "_filter_severity": f'"{args["severity"]}"' if args.get("severity") else None,
-        "_filter_label": f'"{args["label"]}"' if args.get("label") else None,
-        "_filter_owner_name": f'"{args["owner"]}"' if args.get("owner") else None,
+        "_filter_status": f'"{_safe_filter_value(args["status"])}"' if args.get("status") else None,
+        "_filter_severity": f'"{_safe_filter_value(args["severity"])}"' if args.get("severity") else None,
+        "_filter_label": f'"{_safe_filter_value(args["label"])}"' if args.get("label") else None,
+        "_filter_owner_name": f'"{_safe_filter_value(args["owner"])}"' if args.get("owner") else None,
         "page_size": page_size,
         "sort": "create_time",
         "order": "desc",
@@ -1202,7 +1216,7 @@ def tool_search_cases(client: SoarApiClient, config: McpServerConfig, args: dict
     # not run on a prematurely truncated page.
     scope_filtering = bool(config.min_severity or config.allowed_labels)
     params = {
-        "_filter_name__icontains": f'"{query}"',
+        "_filter_name__icontains": f'"{_safe_filter_value(query)}"',
         "page_size": config.max_results if scope_filtering else limit,
         "sort": "create_time",
         "order": "desc",
@@ -1242,7 +1256,7 @@ def tool_list_artifacts(client: SoarApiClient, config: McpServerConfig, args: di
         "page_size": limit,
     }
     if art_type:
-        params["_filter_type__icontains"] = f'"{art_type}"'
+        params["_filter_type__icontains"] = f'"{_safe_filter_value(art_type)}"'
 
     data, err = client.get("artifact", params=params)
     if err:
