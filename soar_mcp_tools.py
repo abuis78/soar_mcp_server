@@ -1669,9 +1669,8 @@ def tool_create_container(client: SoarApiClient, config: McpServerConfig, args: 
 
 
 def tool_import_playbook(client: SoarApiClient, config: McpServerConfig, args: dict) -> str:
-    """Import a playbook archive into SOAR (POST /rest/import_playbook, multipart)."""
+    """Import a playbook archive into SOAR (POST /rest/import_playbook, JSON body)."""
     import base64 as _b64
-    import io as _io_imp
 
     # Strip ALL whitespace (incl. internal newlines MCP transport may inject)
     archive_b64 = "".join((args.get("archive_b64") or "").split())
@@ -1686,11 +1685,12 @@ def tool_import_playbook(client: SoarApiClient, config: McpServerConfig, args: d
     scm_arg = (args.get("scm") or "local").strip()
     force = bool(args.get("force", False))
 
-    # Resolve writable SCM.
-    # issue #32: GET /rest/scm returns "community" (id=1) as first result — read-only.
-    # Skip read-only and community repos; prefer a writable local/git repo.
-    resolved_scm: Optional[str] = None
+    # Resolve writable SCM to an integer id.
+    # Issue #32: field name is scm_id (int), not scm (str).
+    # GET /rest/scm returns "community" (id=1) as first result — skip it (read-only).
+    resolved_scm_id: Optional[int] = None
     scm_name_resolved: str = ""
+
     if scm_arg.lower() in ("local", ""):
         scm_list, _ = client.get("scm")
         candidates: list = []
@@ -1701,54 +1701,60 @@ def tool_import_playbook(client: SoarApiClient, config: McpServerConfig, args: d
         for s in candidates:
             if not isinstance(s, dict):
                 continue
-            # Skip read-only repos (community is read-only by default on SOAR 8.5)
             if s.get("read_only") or s.get("is_read_only") or s.get("readonly"):
                 continue
             repo_name = (s.get("name") or "").lower()
             if repo_name in ("community", "splunk-soar-community"):
                 continue
             if s.get("type", "").lower() in ("local", "git"):
-                resolved_scm = str(s.get("id") or s.get("name") or "")
-                scm_name_resolved = s.get("name") or resolved_scm
+                try:
+                    resolved_scm_id = int(s["id"])
+                    scm_name_resolved = s.get("name") or str(resolved_scm_id)
+                except (KeyError, TypeError, ValueError):
+                    pass
                 break
     else:
-        resolved_scm = scm_arg
-        scm_name_resolved = scm_arg
+        # Caller passed an explicit id or name
+        try:
+            resolved_scm_id = int(scm_arg)
+            scm_name_resolved = scm_arg
+        except ValueError:
+            # string name — pass as-is in scm field (fallback)
+            scm_name_resolved = scm_arg
 
-    # SOAR 8.5 import_playbook uses multipart/form-data (file upload), NOT base64-in-JSON.
-    # issue #32: sending base64 in a JSON body causes "Failed to load json data" HTTP 400
-    # at a deterministic offset. The UI uses a standard file upload; we replicate that.
-    form_data: dict = {"force": str(force).lower()}
-    if resolved_scm:
-        form_data["scm"] = resolved_scm
+    # SOAR REST reference: POST /rest/import_playbook
+    # Body: { "playbook": "<base64 gzip TAR>", "scm_id": <int>, "force": <bool> }
+    # Field name is scm_id (integer), NOT scm (string) — that was the original 400 cause.
+    body: dict = {
+        "playbook": archive_b64,
+        "force": force,
+    }
+    if resolved_scm_id is not None:
+        body["scm_id"] = resolved_scm_id
+    elif scm_name_resolved:
+        body["scm"] = scm_name_resolved  # fallback: string name
 
-    # Try "playbook" as the multipart file-part name (matches the JSON field name).
-    # If SOAR uses a different field name (e.g. "file"), the 400 diagnostic below says so.
-    files = {"playbook": ("playbook.tgz", _io_imp.BytesIO(raw_bytes), "application/octet-stream")}
-    data, err = client.post_multipart("import_playbook", files=files, data=form_data)
+    data, err = client.post("import_playbook", body)
 
     if err:
         if "403" in str(err):
             return (
                 f"Error importing playbook: {err}\n\n"
-                f"Diagnostics: scm_arg={scm_arg!r}, resolved_scm={resolved_scm!r} "
+                f"Diagnostics: scm_arg={scm_arg!r}, resolved_scm_id={resolved_scm_id!r} "
                 f"({scm_name_resolved!r})\n"
-                "The resolved SCM repo may still be read-only, or the token user lacks\n"
-                "write permission on that repo. Steps:\n"
-                "  1. Run list_cases or get_soar_info to confirm the token is valid.\n"
-                "  2. Check SOAR → Administration → Audit for the exact rejection reason.\n"
-                "  3. Pass an explicit writable scm=<id> from GET /rest/scm."
+                "Possible causes:\n"
+                "  1. SCM repo is still read-only — pass an explicit writable scm=<id>.\n"
+                "  2. Token user lacks write permission — check Administration → Audit.\n"
+                "  3. 'Automation Engineer' role may be required in addition to Administrator."
             )
         if "400" in str(err):
             return (
                 f"Error importing playbook (HTTP 400): {err}\n\n"
-                f"Diagnostics: scm_arg={scm_arg!r}, resolved_scm={resolved_scm!r}, "
+                f"Diagnostics: scm_arg={scm_arg!r}, resolved_scm_id={resolved_scm_id!r}, "
                 f"archive={len(raw_bytes):,} bytes\n"
-                "Multipart file-part name used: 'playbook'. If SOAR expects a different\n"
-                "field name (check browser DevTools → Network → Import Playbook request),\n"
-                "retry with the correct field. Other causes:\n"
-                "  1. Archive corrupt — verify archive_b64 is from export_playbook.\n"
-                "  2. SCM id wrong — pass explicit scm=<id> from GET /rest/scm.\n"
+                "Possible causes:\n"
+                "  1. scm_id not found — pass explicit scm=<id> from GET /rest/scm.\n"
+                "  2. Archive corrupt — verify archive_b64 is from export_playbook.\n"
                 "  3. Duplicate name + force=False — retry with force=True."
             )
         return f"Error importing playbook: {err}"
@@ -1756,7 +1762,6 @@ def tool_import_playbook(client: SoarApiClient, config: McpServerConfig, args: d
     if not isinstance(data, dict):
         return f"Import response (raw): {data}"
 
-    # VERIFY: response field names on SOAR 8.5 — 'playbook_id' / 'id' / 'name' / 'status'
     pb_id = data.get("playbook_id") or data.get("id") or "unknown"
     name = data.get("playbook") or data.get("name") or "unknown"
     status = data.get("status") or data.get("message") or "imported"
@@ -1766,7 +1771,7 @@ def tool_import_playbook(client: SoarApiClient, config: McpServerConfig, args: d
         f"  Name: {name}\n"
         f"  ID: {pb_id}\n"
         f"  Status: {status}\n"
-        f"  SCM: {scm_name_resolved or resolved_scm or 'default'}"
+        f"  SCM: {scm_name_resolved or resolved_scm_id or 'default'}"
     ) + (_disclaimer() if config.advisory_disclaimer else "")
 
 
