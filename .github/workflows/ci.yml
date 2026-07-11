@@ -1,0 +1,43 @@
+name: CI
+
+# Python 3.13 readiness gate (issue #104). SOAR is migrating its app runtime
+# from Python 3.9 to 3.13; apps that don't pass the 3.13 checks stay on 3.9 and
+# are flagged in the Apps UI. This workflow keeps the app verified 3.13-ready.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  py313:
+    name: Python 3.13 (compile · tests · lint · package)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests cryptography pylint
+
+      - name: Syntax gate — compileall
+        run: python -m compileall -q *.py scripts/*.py
+
+      - name: Unit tests
+        run: python -m unittest discover -p "test_*.py" -v
+
+      # SOAR's 3.13-readiness criterion is a clean pylint run. E0401 (import-error)
+      # is disabled because `phantom` is only importable inside SOAR, not in CI.
+      - name: pylint (errors) — app modules, py-version 3.13
+        run: |
+          pylint --py-version=3.13 --disable=all --enable=E --disable=E0401 \
+            soar_mcp_tools.py soar_mcp_config.py soar_mcp_handler.py \
+            soar_mcp_connector.py soar_mcp_tokens.py soar_mcp_utils.py \
+            soar_mcp_envelope.py soar_mcp_capabilities.py \
+            soar_mcp_view.py soar_mcp_uber_view.py scripts/lint_soar_app_package.py
