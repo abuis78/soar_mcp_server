@@ -273,9 +273,25 @@ Write tools modify live SOAR data. Enable only after reviewing the [Disclaimer](
 
 | Tool | Action | Requirement |
 |------|--------|-------------|
-| **`create_container`** | Creates an isolated test container for playbook self-testing | Requires `enable_test_harness` checkbox **AND** SOAR user with container-creation rights |
+| **`create_container`** | Creates an isolated test container for playbook self-testing | `enable_test_harness` + SOAR user with **container-create** rights |
+| **`delete_container`** | Deletes a suite-owned test container (cleanup) | `enable_test_harness` + SOAR user with **container-delete** rights |
 
 Enable via asset config: check **`enable_test_harness`** → Save → Test Connectivity. No SSH or file edit required (v1.6.9+).
+
+**Required SOAR permissions for the full create → test → cleanup loop:** the token
+user needs create/update rights on containers, artifacts, and notes **and**
+container-**delete** rights for cleanup. A user with only *Automation /
+Automation Engineer* can typically create and mutate test containers but **cannot
+delete** them (delete returns HTTP 403) — grant a role with container-delete, or
+clean up test cases manually. `delete_container` reports a 403 as a clear cleanup
+finding, not a silent success.
+
+**Container label portability:** `test` is not a valid container label on every
+SOAR install. Set the label your instance actually allows (e.g. `events`) via
+`[safety] test_container_label` in `mcp.conf`; `create_container` uses it as the
+default. `delete_container` treats a container as suite-owned (safe to delete) if
+its label matches `test_container_label` **or** its name starts with
+`[safety] test_container_name_prefix` (default `mcp_`).
 
 ---
 
