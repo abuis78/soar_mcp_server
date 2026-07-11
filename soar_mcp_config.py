@@ -83,6 +83,8 @@ ALL_TOOLS: list[str] = [
     "save_playbook_layout_only",
     # Client config helper (v1.8.0+)
     "generate_mcp_client_config",
+    # Diagnostics (v1.9.0+)
+    "diagnose_soar_mcp_environment",
 ]
 
 READ_ONLY_TOOLS: frozenset[str] = frozenset(
@@ -117,6 +119,8 @@ READ_ONLY_TOOLS: frozenset[str] = frozenset(
         "check_visual_editor_compat",
         # Client config helper (v1.8.0+)
         "generate_mcp_client_config",
+        # Diagnostics (v1.9.0+)
+        "diagnose_soar_mcp_environment",
     ]
 )
 

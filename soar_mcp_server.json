@@ -341,6 +341,13 @@
             "default": true,
             "required": false,
             "order": 81
+        },
+        "tool_diagnose_soar_mcp_environment": {
+            "description": "READ \u2014 diagnose_soar_mcp_environment: Read-only diagnostics (app version, endpoint shape, handler reachability, /rest/version probe, security posture). Never returns token values.",
+            "data_type": "boolean",
+            "default": true,
+            "required": false,
+            "order": 82
         }
     },
     "actions": [
