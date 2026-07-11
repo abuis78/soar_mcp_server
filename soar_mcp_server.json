@@ -8,7 +8,7 @@
     "product_version_regex": ".*",
     "publisher": "Andreas Buis",
     "license": "Copyright 2026 Andreas Buis",
-    "app_version": "1.9.1",
+    "app_version": "1.10.0",
     "utctime_updated": "2026-07-10T12:00:00.000000Z",
     "package_name": "phantom_soar_mcp_server",
     "main_module": "soar_mcp_connector.py",
