@@ -133,7 +133,7 @@ class SoarMcpRestHandler(dict):
         session_id = meta.get("HTTP_MCP_SESSION_ID", "")
 
         # Extract base URL from request for API callbacks
-        soar_base = self._extract_base_url(request)
+        soar_base = self._extract_base_url(request, config)
 
         # Persist asset name for widget
         asset_name = path_args[0] if path_args else ""
@@ -407,6 +407,11 @@ class SoarMcpRestHandler(dict):
         if not url:
             return ""
         url = url.strip().rstrip("/")
+        # Reject embedded credentials (user:pass@host) regardless of scheme (#93).
+        host_part = url.split("://", 1)[-1]
+        if "@" in host_part.split("/", 1)[0]:
+            logger.warning("[SOAR MCP] Ignoring base_url with embedded credentials.")
+            return ""
         if re.match(r"^https?://", url, re.I):
             return url
         if "://" not in url:
@@ -427,19 +432,20 @@ class SoarMcpRestHandler(dict):
         return ""
 
     @staticmethod
-    def _extract_base_url(request) -> str:
+    def _extract_base_url(request, config=None) -> str:
         # Security (issue #58): the returned base_url is used to build the
         # SoarApiClient that sends the SOAR call token. It must come from a
         # TRUSTED source, NEVER from attacker-controllable request headers
         # (Host / X-Forwarded-*), which could redirect token-bearing API calls
         # to an attacker host (SSRF/credential exfil).
         #
-        # 1. phantom.rest.get_phantom_base_url() — authoritative on-box.
-        # 2. Operator-configured base_url from the asset config (trusted).
-        #    Restores resilience when phantom.rest is unavailable on a given
-        #    request (issue: MissingSchema on export/nodes/validate) WITHOUT
-        #    trusting request headers.
-        # Fail closed ("") if neither yields a scheme-qualified URL.
+        # Trusted sources, in order (all admin-controlled, never request headers):
+        #   1. phantom.rest.get_phantom_base_url() — authoritative on-box.
+        #   2. mcp.conf [server] base_url — static admin config, survives across
+        #      reinstalls better than local/ (issue #93, contributed by @reisball).
+        #   3. asset-config base_url persisted to local/asset_overrides.json by
+        #      Test Connectivity.
+        # Fail closed ("") if none yields a scheme-qualified URL.
         cls = SoarMcpRestHandler
         try:
             import phantom.rest as _pr
@@ -448,11 +454,15 @@ class SoarMcpRestHandler(dict):
                 return url
         except Exception:
             pass
+        if config is not None and getattr(config, "base_url", ""):
+            url = cls._normalize_base_url(config.base_url)
+            if url:
+                return url
         url = cls._normalize_base_url(cls._read_configured_base_url())
         if url:
             return url
-        logger.warning("[SOAR MCP] Could not resolve SOAR base URL from phantom.rest "
-                       "or asset config; refusing to derive it from request headers.")
+        logger.warning("[SOAR MCP] Could not resolve SOAR base URL from phantom.rest, "
+                       "mcp.conf, or asset config; refusing to derive it from request headers.")
         return ""
 
     @staticmethod
