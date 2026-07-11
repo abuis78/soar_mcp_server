@@ -38,6 +38,27 @@ def _manifest_app_version() -> str:
 # ── Valid values ───────────────────────────────────────────────────────────────
 _VALID_SEVERITIES = {"high", "medium", "low", "informational", ""}
 
+
+def normalise_base_url(raw: object) -> str:
+    """Return a trusted, scheme-qualified SOAR base URL without a trailing slash,
+    or "" if it is not usable. Rejects non-http(s) schemes and URLs with embedded
+    credentials (issue #93, contributed by @reisball). Strict on purpose: this is
+    an admin-configured value, so it must be a full, clean URL."""
+    if not isinstance(raw, str):
+        return ""
+    from urllib.parse import urlparse
+    val = raw.strip().rstrip("/")
+    if not val:
+        return ""
+    parsed = urlparse(val)
+    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+        logger.warning("[MCP Config] Ignoring invalid base_url '%s'.", val)
+        return ""
+    if parsed.username or parsed.password:
+        logger.warning("[MCP Config] Ignoring base_url with embedded credentials.")
+        return ""
+    return val
+
 # ── All known tool names ───────────────────────────────────────────────────────
 ALL_TOOLS: list[str] = [
     # Read-only
@@ -145,6 +166,9 @@ class McpServerConfig:
     # [server] section
     timeout: float = 60.0
     max_results: int = 50
+    # Trusted admin-configured SOAR base URL (mcp.conf [server] base_url). Used by
+    # the handler as a fallback when phantom.rest is unavailable (issue #93).
+    base_url: str = ""
     ssl_verify: Union[bool, str] = True
     log_tool_calls: bool = True
     protocol_version: str = "2024-11-05"
@@ -206,6 +230,7 @@ class McpServerConfig:
             "protocol_version": self.protocol_version,
             "server_name": self.server_name,
             "server_version": self.server_version,
+            "base_url_configured": bool(self.base_url),
             "ssl_verify": self.ssl_verify if isinstance(self.ssl_verify, bool) else "custom_path",
             "allowed_labels": self.allowed_labels,
             "min_severity": self.min_severity,
@@ -307,6 +332,10 @@ class McpConfigLoader:
         # ── [server] ──────────────────────────────────────────────────────────
         config.timeout = self._get_float(parser, "server", "timeout", 60.0, min_val=1.0, max_val=300.0)
         config.max_results = self._get_int(parser, "server", "max_results", 50, min_val=1, max_val=500)
+        config.base_url = normalise_base_url(
+            parser.get("server", "base_url", fallback="").strip()
+            or parser.get("server", "soar_base_url", fallback="").strip()
+        )
         config.ssl_verify = self._parse_ssl_verify(parser.get("server", "ssl_verify", fallback="true"))
         config.log_tool_calls = self._get_bool(parser, "server", "log_tool_calls", True)
         config.protocol_version = parser.get("server", "protocol_version", fallback="2024-11-05").strip()

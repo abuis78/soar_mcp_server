@@ -64,6 +64,31 @@ class BaseUrlResolutionTest(unittest.TestCase):
         H._extract_base_url(object())
         self.assertTrue(captured.get("called"))
 
+    def test_mcp_conf_base_url_used_when_phantom_unavailable(self):
+        # #93 / #94: config.base_url (mcp.conf [server] base_url) is a trusted
+        # fallback, preferred over the asset-override file.
+        H._read_configured_base_url = staticmethod(lambda: "")
+
+        class _Cfg:
+            base_url = "https://from-mcp-conf.example.com"
+
+        self.assertEqual(H._extract_base_url(object(), _Cfg()),
+                         "https://from-mcp-conf.example.com")
+
+
+class BaseUrlCredentialTest(unittest.TestCase):
+    """Embedded credentials in a base_url must be rejected (issue #93/#94)."""
+
+    def test_handler_normalize_rejects_credentials(self):
+        self.assertEqual(H._normalize_base_url("https://user:pass@soar.x"), "")
+
+    def test_config_normalise_rejects_credentials_and_bad_scheme(self):
+        from soar_mcp_config import normalise_base_url
+        self.assertEqual(normalise_base_url("https://user:pass@soar.x"), "")
+        self.assertEqual(normalise_base_url("ftp://soar.x"), "")
+        self.assertEqual(normalise_base_url("soar.x"), "")   # strict: scheme required
+        self.assertEqual(normalise_base_url("https://soar.x/"), "https://soar.x")
+
 
 if __name__ == "__main__":
     unittest.main()
