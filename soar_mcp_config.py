@@ -201,6 +201,49 @@ class McpServerConfig:
         }
 
 
+def build_posture_report(config: "McpServerConfig") -> dict:
+    """Return the effective security posture of this asset (issue #51).
+
+    Shared by Test Connectivity (#51) and the diagnostics tool (#67) so both
+    surfaces report identical, non-secret state. Contains no tokens or secrets.
+    """
+    try:
+        from soar_mcp_tokens import _have_fernet
+        fernet_available = bool(_have_fernet())
+    except Exception:
+        fernet_available = False
+
+    enabled_write = sorted(config.enabled_tools - READ_ONLY_TOOLS)
+    ssl = config.ssl_verify if isinstance(config.ssl_verify, bool) else "custom_path"
+
+    # Coarse risk flags for a quick red/yellow/green read — advisory only.
+    risk_flags: list[str] = []
+    if enabled_write and ssl is False:
+        risk_flags.append("write_tools_enabled_with_ssl_verify_off")
+    if config.enable_test_harness:
+        risk_flags.append("test_harness_enabled")
+    if enabled_write and not config.require_confirmation:
+        risk_flags.append("write_tools_without_confirmation")
+    if config.scoped_tokens_enabled and not fernet_available:
+        risk_flags.append("scoped_tokens_without_fernet_encryption")
+    if config.scoped_tokens_enabled and not config.scoped_tokens_required and enabled_write:
+        risk_flags.append("legacy_full_tokens_still_accepted")
+
+    return {
+        "write_tools_enabled": config.write_tools_enabled,
+        "enabled_write_tools": enabled_write,
+        "ssl_verify": ssl,
+        "enable_test_harness": config.enable_test_harness,
+        "require_confirmation": config.require_confirmation,
+        "scoped_tokens_enabled": config.scoped_tokens_enabled,
+        "scoped_tokens_required": config.scoped_tokens_required,
+        "fernet_available": fernet_available,
+        "legacy_path_rate_limited": config.token_rate_limit_per_minute > 0,
+        "advisory_disclaimer": config.advisory_disclaimer,
+        "risk_flags": risk_flags,
+    }
+
+
 class McpConfigLoader:
     """
     Loads and parses mcp.conf following Splunk/SOAR config precedence.
