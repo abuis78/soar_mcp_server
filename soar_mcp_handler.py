@@ -22,6 +22,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import sys
 
 # ── App directory on sys.path ──────────────────────────────────────────────────
@@ -232,6 +233,14 @@ class SoarMcpRestHandler(dict):
                 )
                 return self._error(rpc_id, -32000, "Rate limit exceeded. Try again shortly.")
 
+        # Tool calls need a usable base URL. Fail with a clear, actionable error
+        # rather than letting a scheme-less/empty base_url produce opaque
+        # "MissingSchema" errors deep in every tool (base_url regression).
+        if rpc_method == "tools/call" and not soar_base:
+            return self._error(rpc_id, _JSONRPC_INTERNAL_ERROR,
+                "Could not determine the SOAR base URL. Set 'base_url' in the SOAR "
+                "MCP Server asset configuration and run Test Connectivity.")
+
         # Build SOAR API client for tool calls
         client = SoarApiClient(soar_base, soar_call_token, config)
 
@@ -379,25 +388,63 @@ class SoarMcpRestHandler(dict):
                 "error": {"code": code, "message": message}}
 
     @staticmethod
-    def _extract_base_url(request) -> str:
-        # Security (issue #58): the returned base_url is used to build the
-        # SoarApiClient that sends the SOAR call token. It must come from the
-        # authoritative SOAR system setting, NEVER from attacker-controllable
-        # request headers (Host / X-Forwarded-*), which could redirect
-        # token-bearing API calls to an attacker host (SSRF/credential exfil).
-        # phantom.rest.get_phantom_base_url() is authoritative on-box; if it is
-        # unavailable we fail closed (return "") rather than trust headers.
-        if request is None:
+    def _normalize_base_url(url: str) -> str:
+        """Return a scheme-qualified base URL, or "" if it can't be made safe.
+
+        Guards against the MissingSchema class of bugs: a scheme-less value
+        (e.g. a bare host from some SOAR builds) would otherwise be handed to
+        requests and blow up on every API call. Trusted sources missing a
+        scheme default to https (never http). Non-http schemes are rejected.
+        """
+        if not url:
             return ""
+        url = url.strip().rstrip("/")
+        if re.match(r"^https?://", url, re.I):
+            return url
+        if "://" not in url:
+            return "https://" + url
+        return ""
+
+    @staticmethod
+    def _read_configured_base_url() -> str:
+        """Operator-configured base_url persisted by the connector (asset config).
+        Trusted — NOT a request header — so using it does not reintroduce #58."""
         try:
-            import phantom.rest as _pr
-            url = _pr.get_phantom_base_url()
-            if url:
-                return url.rstrip("/")
+            path = os.path.join(_app_dir, "local", "asset_overrides.json")
+            if os.path.exists(path):
+                with open(path, encoding="utf-8") as fh:
+                    return (json.load(fh).get("base_url") or "").strip()
         except Exception:
             pass
-        logger.warning("[SOAR MCP] Could not resolve authoritative SOAR base URL; "
-                       "refusing to derive it from request headers.")
+        return ""
+
+    @staticmethod
+    def _extract_base_url(request) -> str:
+        # Security (issue #58): the returned base_url is used to build the
+        # SoarApiClient that sends the SOAR call token. It must come from a
+        # TRUSTED source, NEVER from attacker-controllable request headers
+        # (Host / X-Forwarded-*), which could redirect token-bearing API calls
+        # to an attacker host (SSRF/credential exfil).
+        #
+        # 1. phantom.rest.get_phantom_base_url() — authoritative on-box.
+        # 2. Operator-configured base_url from the asset config (trusted).
+        #    Restores resilience when phantom.rest is unavailable on a given
+        #    request (issue: MissingSchema on export/nodes/validate) WITHOUT
+        #    trusting request headers.
+        # Fail closed ("") if neither yields a scheme-qualified URL.
+        cls = SoarMcpRestHandler
+        try:
+            import phantom.rest as _pr
+            url = cls._normalize_base_url(_pr.get_phantom_base_url() or "")
+            if url:
+                return url
+        except Exception:
+            pass
+        url = cls._normalize_base_url(cls._read_configured_base_url())
+        if url:
+            return url
+        logger.warning("[SOAR MCP] Could not resolve SOAR base URL from phantom.rest "
+                       "or asset config; refusing to derive it from request headers.")
         return ""
 
     @staticmethod
