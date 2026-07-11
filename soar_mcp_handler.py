@@ -300,6 +300,14 @@ class SoarMcpRestHandler(dict):
             "instructions": instructions,
         }
 
+    # Tools whose real function is not yet available on any verified SOAR
+    # version, so they must NOT be advertised in tools/list as functional
+    # (issue #65). save_playbook_layout_only can only preview (dry_run); its
+    # actual write path is blocked until the COA write endpoint is live-verified
+    # (see VERIFICATION.md). Hidden from discovery; a direct dry_run call is
+    # still honoured by _handle_tools_call for anyone who already knows the name.
+    _HIDDEN_FROM_LIST = frozenset({"save_playbook_layout_only"})
+
     def _handle_tools_list(self, config: McpServerConfig,
                            token_verification=None) -> dict:
         # Scoped token allow-list intersects with asset-config enabled tools.
@@ -311,7 +319,7 @@ class SoarMcpRestHandler(dict):
             {"name": name, "description": schema["description"],
              "inputSchema": schema["inputSchema"]}
             for name, schema in TOOL_SCHEMAS.items()
-            if name in allowed
+            if name in allowed and name not in self._HIDDEN_FROM_LIST
         ]
         logger.info("[SOAR MCP] tools/list → %d tools", len(tools))
         return {"tools": tools}

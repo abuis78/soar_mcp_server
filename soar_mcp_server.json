@@ -322,7 +322,7 @@
             "order": 80
         },
         "tool_save_playbook_layout_only": {
-            "description": "WRITE \u26a0\ufe0f \u2014 save_playbook_layout_only: Save node x/y positions to VPE. dry_run=true (default) is always safe. Actual write is blocked until COA write endpoint is verified in VERIFICATION.md.",
+            "description": "WRITE \u26a0\ufe0f (PREVIEW ONLY) \u2014 save_playbook_layout_only: Save node x/y positions to VPE. The actual write path is unverified and blocked, so this tool is HIDDEN from the MCP tools/list until the COA write endpoint is verified (VERIFICATION.md). dry_run preview still works if called directly. This checkbox currently has no effect on discovery.",
             "data_type": "boolean",
             "default": false,
             "required": false,
