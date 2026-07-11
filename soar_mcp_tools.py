@@ -4029,6 +4029,58 @@ TOOL_SCHEMAS["diagnose_soar_mcp_environment"] = {
 }
 
 
+def tool_detect_soar_capabilities(
+    client: SoarApiClient, config: McpServerConfig, args: dict
+) -> str:
+    """Read-only: detect how this SOAR instance's playbook/COA surface behaves
+    (issue #68). Probes a known-good playbook and reports the capability map."""
+    from soar_mcp_capabilities import detect_capabilities
+    from soar_mcp_envelope import envelope_response, normalize_output_format
+
+    fmt = normalize_output_format(args.get("output_format"))
+
+    pid, err = _require_positive_int(args.get("playbook_id"), "playbook_id") \
+        if args.get("playbook_id") is not None else (None, None)
+    if err:
+        return err
+    if pid is None:
+        # Auto-pick the first available playbook as the probe sample.
+        data, list_err = client.get("playbook", params={"page_size": 1})
+        items = data if isinstance(data, list) else (data or {}).get("data", [])
+        if not items:
+            return envelope_response(
+                False, "No playbook available to probe capabilities.",
+                errors=[{"safe_message": list_err or "no playbooks found"}], fmt=fmt)
+        pid = items[0].get("id")
+
+    report = detect_capabilities(client, int(pid))
+    findings = [{"severity": "info", "code": n} for n in report.notes]
+    ok = report.coa_endpoint_available or report.export_fallback_available
+    summary = (
+        f"Capabilities probed via playbook {pid}: "
+        f"coa={'live' if report.coa_graph_extractable else 'summary-only' if report.coa_endpoint_available else 'unavailable'}, "
+        f"python_source={report.python_source}, export_fallback={report.export_fallback_available}."
+    )
+    return envelope_response(ok, summary, data=report.to_dict(),
+                             findings=findings, fmt=fmt)
+
+
+TOOL_SCHEMAS["detect_soar_capabilities"] = {
+    "description": (
+        "READ — Detect how this SOAR instance's playbook/COA surface actually "
+        "behaves (COA graph availability, export fallback, Python payload source, "
+        "validation method). Probes one known-good playbook. output_format=text|json."
+    ),
+    "inputSchema": {
+        "type": "object",
+        "properties": {
+            "playbook_id": {"type": "integer", "description": "Playbook to probe (default: first available)."},
+            "output_format": {"type": "string", "enum": ["text", "json"], "description": "Output format (default text)."},
+        },
+    },
+}
+
+
 TOOL_SCHEMAS["delete_container"] = {
     "description": (
         "WRITE — Delete a test container by ID to clean up after playbook self-tests. "
@@ -4093,6 +4145,8 @@ _TOOL_HANDLERS = {
     "delete_container": tool_delete_container,
     # Diagnostics (v1.9.0+)
     "diagnose_soar_mcp_environment": tool_diagnose_soar_mcp_environment,
+    # Capability detection (v1.10.0+)
+    "detect_soar_capabilities": tool_detect_soar_capabilities,
 }
 
 

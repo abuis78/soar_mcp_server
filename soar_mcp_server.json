@@ -348,6 +348,13 @@
             "default": true,
             "required": false,
             "order": 82
+        },
+        "tool_detect_soar_capabilities": {
+            "description": "READ \u2014 detect_soar_capabilities: Detect how this SOAR instance's playbook/COA surface behaves (COA graph, export fallback, Python source, validation method) by probing one known-good playbook.",
+            "data_type": "boolean",
+            "default": true,
+            "required": false,
+            "order": 83
         }
     },
     "actions": [

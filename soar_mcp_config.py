@@ -85,6 +85,8 @@ ALL_TOOLS: list[str] = [
     "generate_mcp_client_config",
     # Diagnostics (v1.9.0+)
     "diagnose_soar_mcp_environment",
+    # Capability detection (v1.10.0+)
+    "detect_soar_capabilities",
 ]
 
 READ_ONLY_TOOLS: frozenset[str] = frozenset(
@@ -121,6 +123,8 @@ READ_ONLY_TOOLS: frozenset[str] = frozenset(
         "generate_mcp_client_config",
         # Diagnostics (v1.9.0+)
         "diagnose_soar_mcp_environment",
+        # Capability detection (v1.10.0+)
+        "detect_soar_capabilities",
     ]
 )
 
