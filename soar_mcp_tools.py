@@ -69,6 +69,101 @@ def _safe_filter_value(value: Any, *, max_len: int = 200) -> str:
     return str(value).replace("\\", "").replace('"', "")[:max_len]
 
 
+# ── REST/COA error classification (issue #70) ─────────────────────────────────
+# Turns HTTP responses and request exceptions into a structured, credential-safe
+# error record: category, endpoint_category, status_code, safe_message,
+# suggested_next_step. Never includes tokens, headers, or raw response bodies.
+
+_STATUS_CATEGORY = {401: "authentication", 403: "authorization", 404: "not_found"}
+_CATEGORY_HINT = {
+    "authentication": "Verify the ph-auth-token in your MCP client configuration.",
+    "authorization": "The token user may lack the required SOAR role/permission "
+                     "(check Administration → Audit).",
+    "not_found": "Verify the resource ID, or whether this endpoint exists on this "
+                 "SOAR version.",
+    "server_error": "Transient SOAR-side error — retry shortly or check SOAR logs.",
+    "client_error": "Check the request parameters.",
+    "timeout": "Increase [server] timeout or check SOAR responsiveness.",
+    "tls": "Add the SOAR certificate to the trust store, or set ssl_verify=false on "
+           "test instances only.",
+    "connection": "Verify base_url and network reachability to SOAR.",
+    "unknown": "Check the SOAR logs for details.",
+}
+
+
+def _endpoint_category(url: str) -> str:
+    """Coarse endpoint label (no IDs/secrets) for diagnostics."""
+    try:
+        after = url.split("://", 1)[-1]
+        path = after.split("/", 1)[1] if "/" in after else ""
+        for root in ("rest/", "coa/"):
+            if root in path:
+                seg = path.split(root, 1)[1].split("/", 1)[0].split("?")[0]
+                return f"{root.rstrip('/')}/{seg}" if seg else root.rstrip("/")
+    except Exception:
+        pass
+    return ""
+
+
+def _soar_message(resp: "requests.Response") -> str:
+    """Return ONLY the SOAR message/error field — never raw text/HTML bodies."""
+    try:
+        body = resp.json()
+        if isinstance(body, dict):
+            m = body.get("message") or body.get("error")
+            if m:
+                return str(m)[:300]
+    except Exception:
+        pass
+    return ""
+
+
+def classify_response(resp: "requests.Response") -> dict:
+    """Classify a >=400 HTTP response into a safe error record."""
+    sc = resp.status_code
+    cat = _STATUS_CATEGORY.get(sc) or ("server_error" if sc >= 500 else "client_error")
+    base = {
+        401: "Authentication failed (HTTP 401).",
+        403: "Access denied (HTTP 403).",
+        404: "Resource not found (HTTP 404).",
+    }.get(sc, f"SOAR API error (HTTP {sc}).")
+    soar_msg = _soar_message(resp)
+    safe = f"{base} {soar_msg}".strip() if soar_msg else base
+    return {
+        "category": cat,
+        "endpoint_category": _endpoint_category(getattr(resp, "url", "") or ""),
+        "status_code": sc,
+        "safe_message": safe,
+        "suggested_next_step": _CATEGORY_HINT[cat],
+    }
+
+
+def classify_exception(exc: Exception, *, where: str = "SOAR REST API") -> dict:
+    """Classify a request exception into a safe error record (keeps keyword
+    substrings like 'timed out' / 'SSL error' / 'Connection error' for callers
+    that pattern-match on them)."""
+    if isinstance(exc, requests.exceptions.Timeout):
+        cat, safe = "timeout", f"{where} timed out."
+    elif isinstance(exc, requests.exceptions.SSLError):
+        cat, safe = "tls", "SSL error: TLS certificate verification failed."
+    elif isinstance(exc, requests.exceptions.ConnectionError):
+        cat, safe = "connection", f"Connection error: could not reach {where}."
+    else:
+        cat, safe = "unknown", f"Unexpected error: {type(exc).__name__}"
+    return {
+        "category": cat,
+        "endpoint_category": "",
+        "status_code": None,
+        "safe_message": safe,
+        "suggested_next_step": _CATEGORY_HINT[cat],
+    }
+
+
+def _err_str(info: dict) -> str:
+    """Render an error record as a single safe string."""
+    return f"{info['safe_message']} {info['suggested_next_step']}".strip()
+
+
 logger = logging.getLogger(__name__)
 
 # ── SOAR severity ordering (for min_severity filtering) ───────────────────────
@@ -105,14 +200,8 @@ class SoarApiClient:
         try:
             resp = self._session.get(url, params=params, timeout=self._config.timeout)
             return self._handle_response(resp)
-        except requests.exceptions.Timeout:
-            return None, f"SOAR REST API timed out after {self._config.timeout}s"
-        except requests.exceptions.SSLError as e:
-            return None, f"SSL error: {e}"
-        except requests.exceptions.ConnectionError as e:
-            return None, f"Connection error: {e}"
         except Exception as e:
-            return None, f"Unexpected error: {type(e).__name__}"
+            return None, _err_str(classify_exception(e, where="SOAR REST API"))
 
     def post(self, path: str, body: dict) -> tuple[dict | None, str | None]:
         """POST request. Returns (data, error_message)."""
@@ -120,12 +209,8 @@ class SoarApiClient:
         try:
             resp = self._session.post(url, json=body, timeout=self._config.timeout)
             return self._handle_response(resp)
-        except requests.exceptions.Timeout:
-            return None, f"SOAR REST API timed out after {self._config.timeout}s"
-        except requests.exceptions.ConnectionError as e:
-            return None, f"Connection error: {e}"
         except Exception as e:
-            return None, f"Unexpected error: {type(e).__name__}"
+            return None, _err_str(classify_exception(e, where="SOAR REST API"))
 
     def post_multipart(
         self,
@@ -144,12 +229,8 @@ class SoarApiClient:
                 verify=self._config.ssl_verify,
             )
             return self._handle_response(resp)
-        except requests.exceptions.Timeout:
-            return None, f"SOAR REST API timed out after {self._config.timeout}s"
-        except requests.exceptions.ConnectionError as e:
-            return None, f"Connection error: {e}"
         except Exception as e:
-            return None, f"Unexpected error: {type(e).__name__}"
+            return None, _err_str(classify_exception(e, where="SOAR REST API"))
 
     def delete(self, path: str) -> tuple[dict | None, str | None]:
         """DELETE request. Returns (data, error_message)."""
@@ -157,37 +238,21 @@ class SoarApiClient:
         try:
             resp = self._session.delete(url, timeout=self._config.timeout)
             return self._handle_response(resp)
-        except requests.exceptions.Timeout:
-            return None, f"SOAR REST API timed out after {self._config.timeout}s"
-        except requests.exceptions.ConnectionError as e:
-            return None, f"Connection error: {e}"
         except Exception as e:
-            return None, f"Unexpected error: {type(e).__name__}"
+            return None, _err_str(classify_exception(e, where="SOAR REST API"))
 
     def get_binary(self, path: str, params: dict | None = None) -> tuple[bytes | None, str | None]:
         """GET request returning raw bytes (for binary endpoints like playbook export)."""
         url = f"{self._base_url}/rest/{path.lstrip('/')}"
         try:
             resp = self._session.get(url, params=params, timeout=self._config.timeout)
-            if resp.status_code == 401:
-                return None, "Authentication failed (HTTP 401). Check ph-auth-token."
-            if resp.status_code == 403:
-                return None, "Access denied (HTTP 403). Token may lack required permissions."
-            if resp.status_code == 404:
-                return None, "Resource not found (HTTP 404)."
             if resp.status_code >= 400:
-                # Do not echo the raw SOAR response body to the client (#57).
+                info = classify_response(resp)
                 logger.info("[MCP] get_binary HTTP %s body=%s", resp.status_code, resp.text[:200])
-                return None, f"SOAR API error (HTTP {resp.status_code})."
+                return None, _err_str(info)
             return resp.content, None
-        except requests.exceptions.Timeout:
-            return None, f"SOAR REST API timed out after {self._config.timeout}s"
-        except requests.exceptions.SSLError as e:
-            return None, f"SSL error: {e}"
-        except requests.exceptions.ConnectionError as e:
-            return None, f"Connection error: {e}"
         except Exception as e:
-            return None, f"Unexpected error: {type(e).__name__}"
+            return None, _err_str(classify_exception(e, where="SOAR REST API"))
 
     def _coa_get(self, path: str, params: dict | None = None) -> tuple[dict | list | None, str | None]:
         """GET from the COA Visual Editor endpoint — does NOT prepend /rest/.
@@ -208,36 +273,16 @@ class SoarApiClient:
         try:
             resp = self._session.get(url, params=params, timeout=self._config.timeout)
             return self._handle_response(resp)
-        except requests.exceptions.Timeout:
-            return None, f"COA endpoint timed out after {self._config.timeout}s"
-        except requests.exceptions.SSLError as e:
-            return None, f"SSL error reaching COA endpoint: {e}"
-        except requests.exceptions.ConnectionError as e:
-            return None, f"Connection error reaching COA endpoint: {e}"
         except Exception as e:
-            return None, f"Unexpected error reaching COA endpoint: {type(e).__name__}"
+            return None, _err_str(classify_exception(e, where="COA endpoint"))
 
     def _handle_response(self, resp: requests.Response) -> tuple[Any, str | None]:
-        if resp.status_code == 401:
-            return None, "Authentication failed (HTTP 401). Check ph-auth-token in the MCP client config."
-        if resp.status_code == 403:
-            # Surface SOAR's actual response body — do not swallow it.
-            # The caller (e.g. tool_import_playbook) adds context-specific guidance.
-            try:
-                err_body = resp.json()
-                msg = err_body.get("message") or err_body.get("error") or resp.text[:300]
-            except Exception:
-                msg = resp.text[:300]
-            return None, f"Access denied (HTTP 403): {msg}"
-        if resp.status_code == 404:
-            return None, "Resource not found (HTTP 404)."
         if resp.status_code >= 400:
-            try:
-                err_body = resp.json()
-                msg = err_body.get("message") or err_body.get("error") or resp.text[:300]
-            except Exception:
-                msg = resp.text[:300]
-            return None, f"SOAR API error HTTP {resp.status_code}: {msg}"
+            info = classify_response(resp)
+            # Log the raw body server-side only (never returned to the client).
+            if resp.status_code >= 500 or info["category"] == "client_error":
+                logger.info("[MCP] HTTP %s body=%s", resp.status_code, resp.text[:200])
+            return None, _err_str(info)
         try:
             return resp.json(), None
         except Exception:
