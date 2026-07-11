@@ -31,5 +31,39 @@ class BaseUrlNormalizeTest(unittest.TestCase):
         self.assertEqual(H._normalize_base_url("https://x.com/rest/"), "https://x.com/rest")
 
 
+class BaseUrlResolutionTest(unittest.TestCase):
+    """Acceptance tests for #93: phantom.rest unavailable (as in this env, where
+    `import phantom.rest` raises ModuleNotFoundError) must fall back to the
+    admin-configured base_url — never to request headers."""
+
+    def setUp(self):
+        self._orig = H._read_configured_base_url
+
+    def tearDown(self):
+        H._read_configured_base_url = staticmethod(self._orig)
+
+    def test_phantom_unavailable_configured_present(self):
+        # phantom.rest import fails here; configured base_url must be used.
+        H._read_configured_base_url = staticmethod(lambda: "https://soar.example.com")
+        self.assertEqual(H._extract_base_url(object()), "https://soar.example.com")
+
+    def test_phantom_unavailable_configured_scheme_less(self):
+        H._read_configured_base_url = staticmethod(lambda: "www.soar4rookies.com")
+        self.assertEqual(H._extract_base_url(object()), "https://www.soar4rookies.com")
+
+    def test_phantom_unavailable_no_config_fails_closed(self):
+        H._read_configured_base_url = staticmethod(lambda: "")
+        # No trusted source → "" (handler then returns a clear error, not MissingSchema).
+        self.assertEqual(H._extract_base_url(object()), "")
+
+    def test_configured_reader_never_uses_request(self):
+        # The fallback source is the connector-persisted config, not the request —
+        # _extract_base_url takes only `request` and must not derive from it.
+        captured = {}
+        H._read_configured_base_url = staticmethod(lambda: captured.setdefault("called", True) and "" or "")
+        H._extract_base_url(object())
+        self.assertTrue(captured.get("called"))
+
+
 if __name__ == "__main__":
     unittest.main()
