@@ -74,9 +74,13 @@ Transform Splunk SOAR into an MCP (Model Context Protocol) server endpoint for d
 
 ## Installation
 
+> **Compatibility:** Developed and verified on **Splunk SOAR On-Prem 8.5.0.248**.
+> The COA Visual Editor tools target SOAR 8.5+. The app runs as a generic
+> Python 3 app and is verified **Python 3.13-ready** (CI-gated).
+
 ### Step 1: Install the App
 
-1. **Download** `soar_mcp_server_v1.6.9.tar` from the [Releases page](https://github.com/abuis78/soar_mcp_server/releases/latest)
+1. **Download** the latest `soar_mcp_server_vX.Y.Z.tar` from the [Releases page](https://github.com/abuis78/soar_mcp_server/releases/latest)
 2. In SOAR: **Apps → Install App** (top-right button)
 3. **Upload** the TAR file
 4. Click **Install** and wait for completion
@@ -124,8 +128,19 @@ All tools are individually enabled/disabled via checkboxes. See [Available Tools
    - ✅ Auth token is valid
    - ✅ Tool configuration applied successfully
    - ✅ Number of enabled tools
+   - ✅ Security posture summary (write tools, ssl_verify, token mode)
 
 **The MCP server is now ready for Claude connections.**
+
+> **⚠️ Run Test Connectivity after every (re)install.** The REST handler resolves
+> the SOAR base URL from `phantom.rest` and, as a trusted fallback, from the
+> **Base URL** you configure here (persisted to `local/asset_overrides.json`).
+> On SOAR builds where `phantom.rest` is not importable from the app runtime
+> (observed on 8.5.0.248), the app depends entirely on that configured Base URL.
+> A fresh install resets `local/`, so you must set **Base URL** and run **Test
+> Connectivity** once per install — otherwise tools fail fast with
+> *"Could not determine the SOAR base URL"* (by design, never an insecure
+> header-derived fallback).
 
 ---
 
@@ -186,8 +201,9 @@ claude mcp list
 | "Connection refused" | `curl -I https://soar.example.com/rest/handler/soarmcpserver_ff5f68f3-353c-4d89-9767-967ef5d99117/mcp` |
 | "Unauthorized" | Check auth token in SOAR UI → User Management |
 | "SSL certificate verify failed" | Add SOAR's SSL cert to system trust store, or disable **SSL Verify** in the SOAR asset config for test instances only |
-| Tools not appearing | Run **Test Connectivity** to refresh tool registry |
+| Tools not appearing | Run **Test Connectivity** to refresh tool registry; reconnect the MCP client (tool schemas are cached at connect time) |
 | "Tool disabled" error | Enable tool checkbox in asset config → Test Connectivity |
+| "Could not determine the SOAR base URL" | Set **Base URL** in the asset config and run **Test Connectivity** (required once per install — see the note in Step 3) |
 
 ---
 
