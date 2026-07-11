@@ -189,6 +189,11 @@ class McpServerConfig:
     # called twice: the first call returns a confirm_token, the second (with the
     # same args + token) executes. Default off = backwards-compatible.
     require_confirmation: bool = False
+    # Test-harness portability (issue #117). The default container label ("test")
+    # is not valid on every SOAR install; make it configurable. delete_container
+    # also treats a name starting with test_container_name_prefix as suite-owned.
+    test_container_label: str = "test"
+    test_container_name_prefix: str = "mcp_"
 
     # AI instructions — sent to the LLM in every MCP initialize response
     ai_instructions: str = ""
@@ -362,6 +367,10 @@ class McpConfigLoader:
         config.min_severity = raw_sev if raw_sev in _VALID_SEVERITIES else ""
         config.enable_test_harness = self._get_bool(parser, "safety", "enable_test_harness", False)
         config.require_confirmation = self._get_bool(parser, "safety", "require_confirmation", False)
+        config.test_container_label = (
+            parser.get("safety", "test_container_label", fallback="test").strip() or "test")
+        config.test_container_name_prefix = (
+            parser.get("safety", "test_container_name_prefix", fallback="mcp_").strip() or "mcp_")
 
         # ── [server] ai_instructions ───────────────────────────────────────────
         config.ai_instructions = parser.get("server", "ai_instructions", fallback="").strip()

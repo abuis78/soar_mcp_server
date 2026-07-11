@@ -1789,7 +1789,11 @@ def tool_create_container(client: SoarApiClient, config: McpServerConfig, args: 
     if not name:
         return "Error: name is required."
 
-    label = (args.get("label") or "test").strip()
+    # #117: "test" is not a valid container label on every SOAR install. Default
+    # to the configured test_container_label so operators can point it at a label
+    # their instance actually has (e.g. "events").
+    default_label = getattr(config, "test_container_label", "test") or "test"
+    label = (args.get("label") or default_label).strip()
     severity = (args.get("severity") or "low").strip().lower()
     if severity not in _VALID_SEVERITIES:
         severity = "low"
@@ -1838,22 +1842,40 @@ def tool_delete_container(client: SoarApiClient, config: McpServerConfig, args: 
     if err_msg:
         return err_msg
 
-    # Safety: refuse to delete a container that is not a recognisable test
-    # container unless the caller explicitly forces it. create_container writes
-    # a "test" label by default; require confirm=true to delete anything else.
+    # Safety (#117): a container counts as suite-owned (safe to delete) if its
+    # label matches the configured test label OR its name starts with the
+    # configured test-name prefix (e.g. "mcp_"). This works even where the label
+    # isn't literally "test". Anything else needs confirm=true.
     confirm = bool(args.get("confirm", False))
+    test_label = (getattr(config, "test_container_label", "test") or "test").lower()
+    name_prefix = getattr(config, "test_container_name_prefix", "mcp_") or "mcp_"
     existing, _ = client.get(f"container/{container_id}")
     if isinstance(existing, dict):
         label = (existing.get("label") or "").lower()
-        if label != "test" and not confirm:
+        cname = existing.get("name") or ""
+        suite_owned = (label == test_label) or cname.startswith(name_prefix)
+        if not suite_owned and not confirm:
             return (
-                f"Refusing to delete container #{container_id}: its label is "
-                f"'{existing.get('label') or 'none'}', not 'test'. This does not look "
-                "like an MCP test container. Re-call with confirm=true if you are sure."
+                f"Refusing to delete container #{container_id}: label "
+                f"'{existing.get('label') or 'none'}' != configured test label "
+                f"'{test_label}' and name does not start with '{name_prefix}'. This does "
+                "not look like an MCP test container. Re-call with confirm=true if you "
+                "are sure, or set [safety] test_container_label / "
+                "test_container_name_prefix to match your test objects."
             )
 
     data, err = client.delete(f"container/{container_id}")
     if err:
+        # #117: a create/update-capable token often still lacks delete permission.
+        # Surface it as an actionable cleanup/permission finding, not a silent fail.
+        if "403" in str(err):
+            return (
+                f"Cleanup incomplete — could not delete container #{container_id}: {err}\n"
+                "The token user can create/update containers but lacks delete permission. "
+                "Grant a role with container-delete rights, or clean up this test "
+                "container manually. Required roles for the full create→test→cleanup "
+                "loop are documented in the README (Test Harness)."
+            )
         return f"Error deleting container {container_id}: {err}"
 
     return (
@@ -4212,8 +4234,9 @@ TOOL_SCHEMAS["audit_visual_playbook"] = {
 TOOL_SCHEMAS["delete_container"] = {
     "description": (
         "WRITE — Delete a test container by ID to clean up after playbook self-tests. "
-        "Requires the test harness to be enabled. Refuses to delete containers not "
-        "labelled 'test' unless confirm=true. Never use on production."
+        "Requires the test harness to be enabled. Only deletes suite-owned test "
+        "containers (matching the configured test label or name prefix) unless "
+        "confirm=true. Never use on production."
     ),
     "inputSchema": {
         "type": "object",
@@ -4286,39 +4309,85 @@ _WRITE_TOOLS: frozenset[str] = frozenset(_TOOL_HANDLERS) - READ_ONLY_TOOLS
 
 
 class _ConfirmStore:
-    """In-process, TTL-bound confirmation tokens keyed on (tool, args).
+    """File-backed, TTL-bound confirmation tokens keyed on (tool, args).
 
-    Per-process only (like the token rate limiter); a confirm token issued on
-    one worker is not valid on another. That is acceptable — worst case the
-    client is asked to confirm again.
+    Issue #116: SOAR's REST handler runs multi-process, so an in-memory store
+    issued the token in one worker and never found it in the next — confirmed
+    writes could never execute. This store persists pending confirmations to
+    local/pending_confirmations.json so the token survives across handler
+    processes. Only a SHA-256 hash of the token is stored, never the raw token.
     """
 
-    def __init__(self) -> None:
-        self._d: dict[str, tuple[str, float]] = {}
+    def __init__(self, path=None) -> None:
+        import os as _os
+        app_dir = _os.path.dirname(_os.path.abspath(__file__))
+        self._path = path or _os.path.join(app_dir, "local", "pending_confirmations.json")
         self._lock = threading.Lock()
 
     @staticmethod
-    def _key(tool: str, args: dict) -> str:
+    def _args_hash(tool: str, args: dict) -> str:
         blob = tool + "|" + json.dumps(args, sort_keys=True, default=str)
         return hashlib.sha256(blob.encode()).hexdigest()
+
+    @staticmethod
+    def _token_hash(token: str) -> str:
+        return hashlib.sha256(token.encode()).hexdigest()
+
+    def _load(self) -> dict:
+        import os as _os
+        try:
+            if _os.path.exists(self._path):
+                with open(self._path, encoding="utf-8") as fh:
+                    data = json.load(fh)
+                    return data if isinstance(data, dict) else {}
+        except Exception:
+            pass
+        return {}
+
+    def _save(self, data: dict) -> None:
+        import os as _os
+        try:
+            _os.makedirs(_os.path.dirname(self._path), exist_ok=True)
+            tmp = self._path + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as fh:
+                json.dump(data, fh)
+            _os.replace(tmp, self._path)
+            try:
+                _os.chmod(self._path, 0o600)
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+    @staticmethod
+    def _prune(data: dict) -> dict:
+        now = time.time()
+        return {k: v for k, v in data.items()
+                if isinstance(v, list) and len(v) == 3 and v[2] > now}
 
     def issue(self, tool: str, args: dict, ttl: float = 300.0) -> str:
         token = "confirm_" + secrets.token_urlsafe(9)
         with self._lock:
-            self._d[token] = (self._key(tool, args), time.time() + ttl)
+            data = self._prune(self._load())
+            data[self._token_hash(token)] = [tool, self._args_hash(tool, args), time.time() + ttl]
+            self._save(data)
         return token
 
     def consume(self, token: str, tool: str, args: dict) -> bool:
+        th = self._token_hash(str(token))
         with self._lock:
-            entry = self._d.get(token)
-            if not entry:
-                return False
-            key, exp = entry
-            if time.time() > exp or key != self._key(tool, args):
-                self._d.pop(token, None)
-                return False
-            self._d.pop(token, None)
-            return True
+            data = self._load()
+            entry = data.get(th)
+            data = self._prune(data)          # drop expired (incl. possibly this one)
+            ok = False
+            if (isinstance(entry, list) and len(entry) == 3
+                    and entry[2] > time.time()
+                    and entry[0] == tool
+                    and entry[1] == self._args_hash(tool, args)):
+                ok = True
+            data.pop(th, None)                 # single-use: always remove on match/attempt
+            self._save(data)
+            return ok
 
 
 _confirm_store = _ConfirmStore()
