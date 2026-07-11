@@ -34,18 +34,24 @@ _REQUIRED_FILES = [
 # Manifest fields that must be present and non-empty.
 _REQUIRED_MANIFEST_FIELDS = ["app_version", "main_module", "rest_handler", "appid"]
 
-# Directories that must NOT be shipped inside the app package.
-_EXCLUDED_PREFIXES = [f"{_TOP}/releases/", f"{_TOP}/local/", f"{_TOP}/.git/"]
+# Directories that must NOT be shipped inside the app package. Dev/CI-only paths
+# are excluded so SOAR does not pylint them under Python 3.13 (issue #104): test
+# files carry style warnings that can keep the app pinned to 3.9.
+_EXCLUDED_PREFIXES = [
+    f"{_TOP}/releases/", f"{_TOP}/local/", f"{_TOP}/.git/",
+    f"{_TOP}/scripts/", f"{_TOP}/.github/",
+]
 
 
 def _is_blocked_name(name: str) -> bool:
-    """macOS metadata / build artifacts that must never be in the archive."""
+    """macOS metadata / build artifacts / dev-only files that must not ship."""
     base = name.rstrip("/").split("/")[-1]
     return (
         base == ".DS_Store"
         or base.startswith("._")
         or "/__pycache__/" in f"/{name}"
         or name.endswith(".pyc")
+        or base.startswith("test_")           # unit tests are dev-only (#104)
     )
 
 
