@@ -3949,6 +3949,86 @@ TOOL_SCHEMAS["generate_mcp_client_config"] = {
     "inputSchema": {"type": "object", "properties": {}},
 }
 
+def tool_diagnose_soar_mcp_environment(
+    client: SoarApiClient, config: McpServerConfig, args: dict
+) -> str:
+    """Read-only diagnostics: is the installed MCP endpoint usable, and why not?
+    (issue #67). First consumer of the structured envelope (#74), the posture
+    report (#51), and the error classifier (#70). Never returns token values."""
+    from soar_mcp_config import build_posture_report
+    from soar_mcp_envelope import envelope_response, normalize_output_format
+
+    fmt = normalize_output_format(args.get("output_format"))
+    findings: list[dict] = []
+    errors: list[dict] = []
+
+    endpoint = config.mcp_endpoint or "(unknown — run Test Connectivity)"
+    auth_present = bool(getattr(client, "_auth_token", ""))
+    if not auth_present:
+        findings.append({"severity": "error", "code": "no_auth_token",
+                         "message": "No ph-auth-token was presented on this request."})
+
+    # Safe reachability probe: GET /rest/version.
+    soar_version = None
+    handler_reachable = False
+    ver, ver_err = client.get("version")
+    if ver_err:
+        info = None
+        errors.append({"category": "probe", "safe_message": ver_err,
+                       "endpoint_category": "rest/version"})
+        findings.append({"severity": "warn", "code": "version_probe_failed",
+                         "message": f"/rest/version probe failed: {ver_err}"})
+    else:
+        handler_reachable = True
+        if isinstance(ver, dict):
+            soar_version = ver.get("version") or ver.get("rest_version")
+
+    posture = build_posture_report(config)
+    for flag in posture.get("risk_flags", []):
+        findings.append({"severity": "warn", "code": flag,
+                         "message": f"Security posture: {flag}"})
+
+    data = {
+        "app_version": config.server_version,
+        "mcp_endpoint": endpoint,
+        "auth_token_present": auth_present,   # presence only, never the value
+        "handler_reachable": handler_reachable,
+        "soar_version": soar_version,
+        "enabled_tool_count": len(config.enabled_tools),
+        "security_posture": posture,
+    }
+    ok = auth_present and handler_reachable and not any(
+        f.get("severity") == "error" for f in findings
+    )
+    summary = (
+        "SOAR MCP environment looks usable."
+        if ok else
+        "SOAR MCP environment has issues — see findings."
+    )
+    return envelope_response(ok, summary, data=data, findings=findings,
+                             errors=errors, fmt=fmt)
+
+
+TOOL_SCHEMAS["diagnose_soar_mcp_environment"] = {
+    "description": (
+        "Read-only diagnostics for this SOAR MCP endpoint: reports app version, "
+        "endpoint shape, handler reachability, a safe /rest/version probe, and the "
+        "security posture with actionable findings. Never returns token values. "
+        "Use output_format=json for structured output."
+    ),
+    "inputSchema": {
+        "type": "object",
+        "properties": {
+            "output_format": {
+                "type": "string",
+                "description": "Output format: 'text' (default) or 'json'.",
+                "enum": ["text", "json"],
+            },
+        },
+    },
+}
+
+
 TOOL_SCHEMAS["delete_container"] = {
     "description": (
         "WRITE — Delete a test container by ID to clean up after playbook self-tests. "
@@ -4011,6 +4091,8 @@ _TOOL_HANDLERS = {
     "generate_mcp_client_config": tool_generate_mcp_client_config,
     # Test-harness cleanup (v1.8.0+)
     "delete_container": tool_delete_container,
+    # Diagnostics (v1.9.0+)
+    "diagnose_soar_mcp_environment": tool_diagnose_soar_mcp_environment,
 }
 
 
