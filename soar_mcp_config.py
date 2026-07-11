@@ -87,6 +87,8 @@ ALL_TOOLS: list[str] = [
     "diagnose_soar_mcp_environment",
     # Capability detection (v1.10.0+)
     "detect_soar_capabilities",
+    # Visual playbook pre-edit audit (v1.11.0+)
+    "audit_visual_playbook",
 ]
 
 READ_ONLY_TOOLS: frozenset[str] = frozenset(
@@ -125,6 +127,8 @@ READ_ONLY_TOOLS: frozenset[str] = frozenset(
         "diagnose_soar_mcp_environment",
         # Capability detection (v1.10.0+)
         "detect_soar_capabilities",
+        # Visual playbook pre-edit audit (v1.11.0+)
+        "audit_visual_playbook",
     ]
 )
 

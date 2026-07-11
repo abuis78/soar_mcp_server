@@ -3734,6 +3734,99 @@ def tool_check_visual_editor_compat(
     return json.dumps(result, indent=2)
 
 
+def tool_audit_visual_playbook(
+    client: SoarApiClient, config: McpServerConfig, args: dict
+) -> str:
+    """Read-only pre-edit audit (issue #69): one call → is this playbook safe to
+    inspect/edit in the VPE? Composes COA summary + compat check + capability
+    detection into a severity-tagged audit with operator recommendations.
+    Consumes #68 so it never claims 'safe' when required data is unknown."""
+    from soar_mcp_capabilities import detect_capabilities
+    from soar_mcp_envelope import envelope_response, normalize_output_format
+
+    fmt = normalize_output_format(args.get("output_format"))
+    pid, err_msg = _require_positive_int(args.get("playbook_id"), "playbook_id")
+    if err_msg:
+        return err_msg
+
+    findings: list[dict] = []
+    errors: list[dict] = []
+    data: dict = {"input_id": pid}
+
+    # 1. COA summary (trigger, type, counts, passed_validation).
+    try:
+        summ = json.loads(tool_get_playbook_coa_summary(client, config, {"playbook_id": pid}))
+        sd = summ.get("data") or {}
+        data.update({
+            "current_id": sd.get("current_id"),
+            "name": sd.get("name"),
+            "trigger": sd.get("trigger"),
+            "playbook_type": sd.get("playbook_type"),
+            "passed_validation": sd.get("passed_validation"),
+            "node_count": sd.get("node_count"),
+            "edge_count": sd.get("edge_count"),
+            "warning_count": sd.get("warning_count"),
+            "error_count": sd.get("error_count"),
+        })
+        for e in summ.get("errors", []):
+            errors.append(e)
+    except Exception as exc:
+        errors.append({"safe_message": f"coa_summary failed: {type(exc).__name__}"})
+
+    # 2. Compat findings (reuse the working aggregator; do not modify it).
+    try:
+        compat = json.loads(tool_check_visual_editor_compat(client, config, {"playbook_id": pid}))
+        for f in compat.get("findings", []):
+            findings.append(f)
+        for e in compat.get("errors", []):
+            errors.append(e)
+    except Exception as exc:
+        errors.append({"safe_message": f"compat_check failed: {type(exc).__name__}"})
+
+    # 3. Capability context (#68): don't promise 'safe' when data is unknown.
+    caps = detect_capabilities(client, int(data.get("current_id") or pid))
+    data["capabilities"] = caps.to_dict()
+    inspectable = caps.coa_graph_extractable or caps.export_fallback_available
+    python_known = caps.python_source != "none"
+
+    # 4. Verdict — explicit unknown vs pass/warn/fail.
+    sev_rank = {"high": 3, "warn": 2, "medium": 2, "low": 1, "info": 0}
+    max_sev = max((sev_rank.get(f.get("severity", "low"), 0) for f in findings), default=0)
+    if not inspectable:
+        verdict = "unknown"
+    elif max_sev >= 3 or data.get("error_count"):
+        verdict = "fail"
+    elif max_sev >= 2 or not python_known:
+        verdict = "warn"
+    else:
+        verdict = "pass"
+    data["verdict"] = verdict
+
+    # 5. Operator recommendations.
+    recs: list[str] = []
+    if verdict == "unknown":
+        recs.append("COA graph and export archive are both unavailable — cannot audit; "
+                    "check connectivity/permissions before editing.")
+    if not python_known:
+        recs.append("Generated Python could not be inspected — drift status is unknown; "
+                    "review helper functions manually before saving in the VPE.")
+    if data.get("error_count"):
+        recs.append("Resolve stored node errors before editing.")
+    if any(f.get("code") == "stale_id" for f in findings):
+        recs.append(f"You passed a stale revision; edit the current draft "
+                    f"(id={data.get('current_id')}).")
+    if not recs:
+        recs.append("No blocking issues detected — safe to inspect/edit.")
+    data["recommendations"] = recs
+
+    ok = verdict in ("pass", "warn")
+    summary = (f"Visual playbook audit for '{data.get('name') or pid}' "
+               f"(id={data.get('current_id') or pid}): {verdict.upper()} — "
+               f"{data.get('node_count')} nodes, {len(findings)} finding(s).")
+    return envelope_response(ok, summary, data=data, findings=findings,
+                             errors=errors, fmt=fmt)
+
+
 # ── #29 save_playbook_layout_only (WRITE, guarded) ────────────────────────────
 
 def tool_save_playbook_layout_only(
@@ -4080,6 +4173,24 @@ TOOL_SCHEMAS["detect_soar_capabilities"] = {
     },
 }
 
+TOOL_SCHEMAS["audit_visual_playbook"] = {
+    "description": (
+        "READ — Pre-edit audit of a Visual Editor playbook: one call returns "
+        "stale/current status, node/edge counts, warnings/errors, trigger/type, "
+        "Python payload source, validation + drift summary, and operator "
+        "recommendations. Verdict is pass/warn/fail/unknown — never claims 'safe' "
+        "when required data is unavailable. output_format=text|json."
+    ),
+    "inputSchema": {
+        "type": "object",
+        "properties": {
+            "playbook_id": {"type": "integer", "description": "Playbook to audit (current or stale — resolved automatically)."},
+            "output_format": {"type": "string", "enum": ["text", "json"], "description": "Output format (default text)."},
+        },
+        "required": ["playbook_id"],
+    },
+}
+
 
 TOOL_SCHEMAS["delete_container"] = {
     "description": (
@@ -4147,6 +4258,8 @@ _TOOL_HANDLERS = {
     "diagnose_soar_mcp_environment": tool_diagnose_soar_mcp_environment,
     # Capability detection (v1.10.0+)
     "detect_soar_capabilities": tool_detect_soar_capabilities,
+    # Visual playbook pre-edit audit (v1.11.0+)
+    "audit_visual_playbook": tool_audit_visual_playbook,
 }
 
 

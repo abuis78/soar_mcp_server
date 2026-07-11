@@ -355,6 +355,13 @@
             "default": true,
             "required": false,
             "order": 83
+        },
+        "tool_audit_visual_playbook": {
+            "description": "READ \u2014 audit_visual_playbook: One-call pre-edit audit of a Visual Editor playbook (stale/current, counts, warnings/errors, trigger/type, Python source, validation + drift, recommendations). Verdict pass/warn/fail/unknown.",
+            "data_type": "boolean",
+            "default": true,
+            "required": false,
+            "order": 84
         }
     },
     "actions": [
