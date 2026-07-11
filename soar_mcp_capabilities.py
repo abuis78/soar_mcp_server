@@ -18,6 +18,8 @@ Copyright 2026 Andreas Buis
 """
 from __future__ import annotations
 
+import threading
+import time
 from dataclasses import asdict, dataclass, field
 from typing import Any, Optional
 
@@ -109,3 +111,42 @@ def detect_capabilities(client, sample_playbook_id: int) -> CapabilityReport:
         report.validation_method = "passed_validation_flag"
 
     return report
+
+
+# ── Per-process cached accessor (issue #68 part 2) ────────────────────────────
+# Detection issues 3 read-only probes; caching avoids re-probing on every COA
+# tool call within a short window. Per-process only (like the rate limiter).
+
+_cache: dict[str, tuple[CapabilityReport, float]] = {}
+_cache_lock = threading.Lock()
+
+
+def get_capabilities(client, sample_playbook_id: int, *, ttl: float = 300.0) -> CapabilityReport:
+    """Cached capability detection, keyed on the client base URL + sample id."""
+    key = f"{getattr(client, '_base_url', '')}|{sample_playbook_id}"
+    now = time.time()
+    with _cache_lock:
+        hit = _cache.get(key)
+        if hit and hit[1] > now:
+            return hit[0]
+    report = detect_capabilities(client, sample_playbook_id)
+    with _cache_lock:
+        _cache[key] = (report, now + ttl)
+    return report
+
+
+def explain_empty_graph(client, playbook_id: int) -> Optional[dict]:
+    """When a tool gets an empty node/edge graph, return a capability-based
+    finding explaining WHY (instead of a silent 0), or None if a graph is
+    actually available (so the emptiness is genuine, not a capability gap)."""
+    caps = get_capabilities(client, playbook_id)
+    if caps.coa_graph_extractable or caps.export_fallback_available:
+        return None
+    if not caps.coa_endpoint_available:
+        msg = ("COA endpoint is unreachable and no export fallback is available — "
+               "the graph could not be retrieved (not necessarily empty).")
+    else:
+        msg = ("COA endpoint responded but no extractable node graph was found and "
+               "the export fallback is unavailable — graph could not be retrieved.")
+    return {"severity": "warn", "code": "graph_unavailable",
+            "source": "capabilities", "message": msg}

@@ -2949,8 +2949,17 @@ def tool_list_playbook_nodes(
     # Sort by y, x, id
     node_records.sort(key=lambda r: (r.get("y") or 0, r.get("x") or 0, r.get("id") or 0))
 
+    # Capability-aware degradation (#68 part 2): if the graph came back empty,
+    # explain WHY (COA/export unavailable) instead of a silent "0 nodes".
+    findings: list[dict] = []
+    if not nodes:
+        from soar_mcp_capabilities import explain_empty_graph
+        reason = explain_empty_graph(client, current_id)
+        if reason:
+            findings.append(reason)
+
     result = {
-        "ok": True,
+        "ok": bool(nodes) or not findings,
         "summary": f"{len(node_records)} node(s) in playbook {current_id}.",
         "data": {
             "input_id": pid,
@@ -2960,7 +2969,7 @@ def tool_list_playbook_nodes(
             "filtered_nodes": len(node_records),
             "nodes": node_records,
         },
-        "findings": [],
+        "findings": findings,
         "errors": errors,
     }
     return json.dumps(result, indent=2)
@@ -3015,8 +3024,16 @@ def tool_list_playbook_edges(
         r.get("id") or 0,
     ))
 
+    # Capability-aware degradation (#68 part 2): explain an empty edge graph.
+    findings: list[dict] = []
+    if not edges:
+        from soar_mcp_capabilities import explain_empty_graph
+        reason = explain_empty_graph(client, current_id)
+        if reason:
+            findings.append(reason)
+
     result = {
-        "ok": True,
+        "ok": bool(edges) or not findings,
         "summary": f"{len(edge_records)} edge(s) in playbook {current_id}.",
         "data": {
             "input_id": pid,
@@ -3026,7 +3043,7 @@ def tool_list_playbook_edges(
             "filtered_edges": len(edge_records),
             "edges": edge_records,
         },
-        "findings": [],
+        "findings": findings,
         "errors": errors,
     }
     return json.dumps(result, indent=2)
