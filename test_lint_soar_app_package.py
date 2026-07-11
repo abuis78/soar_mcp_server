@@ -111,6 +111,19 @@ class PackageLinterTest(unittest.TestCase):
         self.assertFalse(r["ok"])
         self.assertTrue(any("traversal" in e for e in r["errors"]))
 
+    def test_test_files_blocked(self):
+        m = _clean_members()
+        m[f"{_TOP}/test_something.py"] = b"x"
+        r = self._lint(m)
+        self.assertFalse(r["ok"])
+        self.assertTrue(any("test_something.py" in e for e in r["errors"]))
+
+    def test_scripts_dir_blocked(self):
+        m = _clean_members()
+        m[f"{_TOP}/scripts/tool.py"] = b"x"
+        r = self._lint(m)
+        self.assertFalse(r["ok"])
+
 
 if __name__ == "__main__":
     unittest.main()
