@@ -21,7 +21,13 @@ _app_dir = os.path.dirname(os.path.abspath(__file__))
 if _app_dir not in sys.path:
     sys.path.insert(0, _app_dir)
 
-from soar_mcp_config import ALL_TOOLS, READ_ONLY_TOOLS, McpConfigLoader, get_config
+from soar_mcp_config import (
+    ALL_TOOLS,
+    READ_ONLY_TOOLS,
+    McpConfigLoader,
+    build_posture_report,
+    get_config,
+)
 from soar_mcp_handler import build_mcp_endpoint
 
 try:
@@ -261,16 +267,19 @@ class SoarMcpConnector(BaseConnector):
                 self.debug_print(f"[MCP] Token purge skipped: {exc}")
                 self.save_progress("Token purge skipped.")
 
+        posture = build_posture_report(config)
         action_result.add_data({
             "mcp_endpoint": mcp_endpoint,
             "enabled_tools": sorted(config.enabled_tools),
             "config_summary": config.to_summary_dict(),
+            "security_posture": posture,
         })
         action_result.set_summary({
             "mcp_endpoint": mcp_endpoint,
             "enabled_tools": len(config.enabled_tools),
             "write_tools_enabled": config.write_tools_enabled,
             "tokens_purged": purged,
+            "posture_risk_flags": len(posture["risk_flags"]),
         })
         return action_result.set_status(
             phantom.APP_SUCCESS,
