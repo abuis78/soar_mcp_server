@@ -59,13 +59,17 @@ class ConfirmStorePersistenceTest(unittest.TestCase):
 
 
 class _FakeContainerClient:
-    def __init__(self, label="events", name="mcp_write_suite_1", delete_err=None):
+    def __init__(self, label="events", name="mcp_write_suite_1", delete_err=None,
+                 get_err=None):
         self._label = label
         self._name = name
         self._delete_err = delete_err
+        self._get_err = get_err
         self.deleted = False
 
     def get(self, path, params=None):
+        if self._get_err:
+            return None, self._get_err
         return {"id": 3, "label": self._label, "name": self._name}, None
 
     def delete(self, path):
@@ -112,6 +116,19 @@ class DeleteContainerPortabilityTest(unittest.TestCase):
         out = call_tool("delete_container", {"container_id": 3}, client, _harness_cfg())
         self.assertIn("Cleanup incomplete", out)
         self.assertIn("delete permission", out)
+
+    def test_get_failure_refuses_delete_without_confirm(self):
+        # #126: if the container GET fails, do NOT delete (fail-safe).
+        client = _FakeContainerClient(get_err="Resource not found (HTTP 404).")
+        out = call_tool("delete_container", {"container_id": 3}, client, _harness_cfg())
+        self.assertFalse(client.deleted, out)
+        self.assertIn("could not read it", out)
+
+    def test_get_failure_allows_delete_with_confirm(self):
+        client = _FakeContainerClient(get_err="Connection error.")
+        out = call_tool("delete_container", {"container_id": 3, "confirm": True},
+                        client, _harness_cfg())
+        self.assertTrue(client.deleted, out)
 
 
 if __name__ == "__main__":

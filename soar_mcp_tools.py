@@ -1849,8 +1849,17 @@ def tool_delete_container(client: SoarApiClient, config: McpServerConfig, args: 
     confirm = bool(args.get("confirm", False))
     test_label = (getattr(config, "test_container_label", "test") or "test").lower()
     name_prefix = getattr(config, "test_container_name_prefix", "mcp_") or "mcp_"
-    existing, _ = client.get(f"container/{container_id}")
-    if isinstance(existing, dict):
+    existing, get_err = client.get(f"container/{container_id}")
+    if not isinstance(existing, dict):
+        # #126: fail-safe — if we cannot READ the container we cannot verify it is
+        # a test container, so refuse to delete unless the caller forces it.
+        if not confirm:
+            return (
+                f"Refusing to delete container #{container_id}: could not read it to "
+                f"verify it is a test container ({get_err or 'unexpected response'}). "
+                "Re-call with confirm=true if you are sure it is safe to delete."
+            )
+    else:
         label = (existing.get("label") or "").lower()
         cname = existing.get("name") or ""
         suite_owned = (label == test_label) or cname.startswith(name_prefix)
