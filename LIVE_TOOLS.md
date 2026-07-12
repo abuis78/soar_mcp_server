@@ -1,4 +1,4 @@
-# SOAR MCP Server — Live Tools (v1.11.6)
+# SOAR MCP Server — Live Tools
 
 **40 tools total: 30 read-only (enabled by default) + 10 write (off by default).**
 Availability is controlled per-tool via the asset configuration checkboxes.

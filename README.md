@@ -1,6 +1,6 @@
 # SOAR MCP Server
 
-**Splunk SOAR On-Premises App — v1.11.6** · runs on **Python 3.13**
+**Splunk SOAR On-Premises App** · runs on **Python 3.13** · [latest release](https://github.com/abuis78/soar_mcp_server/releases/latest)
 
 Transform Splunk SOAR into an MCP (Model Context Protocol) server endpoint for direct AI integration. Claude Desktop, Claude Code, Claude.ai, or any MCP-compatible AI client can connect directly to your SOAR instance for structured access to cases, artifacts, playbooks, and analyst notes — completely on-premises, with zero external dependencies.
 
