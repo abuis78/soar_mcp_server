@@ -1,9 +1,9 @@
-# SOAR MCP Server — Live Tools (v1.7.0)
+# SOAR MCP Server — Live Tools (v1.11.6)
 
-**35 tools total: 26 read-only (enabled by default) + 9 write (off by default).**
+**40 tools total: 30 read-only (enabled by default) + 10 write (off by default).**
 Availability is controlled per-tool via the asset configuration checkboxes.
 
-## Read-only tools (26 — enabled by default)
+## Read-only tools (30 — enabled by default)
 
 ### Case & Incident Management (8)
 - `list_cases` — List cases with status/severity/label/owner/limit filters
@@ -16,7 +16,7 @@ Availability is controlled per-tool via the asset configuration checkboxes.
 - `get_soar_info` — SOAR platform version and health
 
 ### Playbook Operations (read) (3)
-- `list_playbooks` — List available playbooks with name, category, active status
+- `list_playbooks` — List available playbooks (name, category, active status, name_contains/limit filters)
 - `get_playbook_run` — Status and results of a specific playbook run
 - `list_action_runs` — Recent action runs with status and results
 
@@ -39,29 +39,39 @@ Availability is controlled per-tool via the asset configuration checkboxes.
 - `validate_playbook_bundle` — Multi-check validation (passed_validation, node warnings, py_compile, lint)
 - `check_visual_editor_compat` — Aggregator: resolve + summary + nodes + drift + validation → ok/warn/fail
 
-## Write tools (9 — OFF by default; enable deliberately via asset checkboxes)
+### Diagnostics & Capability (v1.8.0+, read) (4)
+- `generate_mcp_client_config` — Copy-ready MCP client config snippets (Claude Desktop/Code, Cursor, CLI); token is always a placeholder
+- `diagnose_soar_mcp_environment` — Read-only environment diagnostics: app version, endpoint shape, handler reachability, `/rest/version` probe, security posture; `output_format=text|json`
+- `detect_soar_capabilities` — Detect how this SOAR instance behaves (COA graph availability, export fallback, Python source, validation method)
+- `audit_visual_playbook` — One-call pre-edit audit of a playbook (stale/current, counts, warnings/errors, trigger/type, Python source, validation + drift, recommendations); verdict pass/warn/fail/unknown
 
-### Playbook-build / self-test (4)
+## Write tools (10 — OFF by default; enable deliberately via asset checkboxes)
+
+### Playbook-build / self-test (5)
 - `run_playbook` — Trigger a playbook on a case
 - `create_artifact` — Add an artifact/IOC to a case
 - `import_playbook` — Import a base64-encoded gzip TAR playbook into the SOAR VPE
-- `create_container` — Create an isolated test container (double-gated: also requires `enable_test_harness=true`)
+- `create_container` — Create an isolated test container (double-gated: also requires `enable_test_harness=true`; default label configurable via `test_container_label`)
+- `delete_container` — Delete a suite-owned test container (test-harness gated; suite-owned = configured label or `test_container_name_prefix`; 403 reported as a cleanup finding)
 
 ### Analyst-facing (4)
-- `add_case_note` — Add a note/comment to a case
+- `add_case_note` — Add a note/comment to a case (HTML stripped)
 - `update_case_status` — Change case status (open/closed/resolved/new/in_progress)
 - `update_case_severity` — Change case severity (high/medium/low/informational)
 - `update_case_owner` — Reassign a case
 
-### COA write (1, experimental)
-- `save_playbook_layout_only` — Save node x/y positions to the VPE; `dry_run=true` (default) previews without writing
+### COA write (1, experimental — hidden from tools/list)
+- `save_playbook_layout_only` — Save node x/y positions to the VPE; `dry_run=true` (default) previews without writing. The real write path is unverified, so the tool is **hidden from `tools/list`** until the COA write endpoint is confirmed (dry-run still works if called directly).
+
+## Safety: two-step confirmation (optional)
+
+Set `[safety] require_confirmation = true` to require a **two-step commit** for every write tool: the first call returns a `confirm_token` + preview, the second call (same args + token) executes. Tokens are persisted (`local/pending_confirmations.json`), single-use, TTL-bound, and survive SOAR's multi-process handler.
 
 ## Token scopes
 
 ### Read-only scope (recommended default)
-Mint via the `mint mcp token` action. Include: all 26 read-only tools.
-Exclude: all 9 write tools.
+Mint via the `mint mcp token` action. Include: all 30 read-only tools. Exclude: all 10 write tools.
 
 ### Playbook-builder / write scope
-Add to the read scope, as needed: `run_playbook`, `create_artifact`, `import_playbook`, `create_container`.
-`create_container` additionally requires `enable_test_harness=true` (asset checkbox or `mcp.conf [safety]`).
+Add to the read scope, as needed: `run_playbook`, `create_artifact`, `import_playbook`, `create_container`, `delete_container`.
+`create_container`/`delete_container` additionally require `enable_test_harness=true` (asset checkbox or `mcp.conf [safety]`).

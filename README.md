@@ -1,12 +1,12 @@
 # SOAR MCP Server
 
-**Splunk SOAR On-Premises App — v1.6.9**
+**Splunk SOAR On-Premises App — v1.11.6** · runs on **Python 3.13**
 
 Transform Splunk SOAR into an MCP (Model Context Protocol) server endpoint for direct AI integration. Claude Desktop, Claude Code, Claude.ai, or any MCP-compatible AI client can connect directly to your SOAR instance for structured access to cases, artifacts, playbooks, and analyst notes — completely on-premises, with zero external dependencies.
 
 **Key Features:**
 - ✅ **100% On-Premises** — No cloud services, no data exfiltration
-- ✅ **Read-Only by Default** — 26 read tools active, write tools opt-in via UI checkboxes
+- ✅ **Read-Only by Default** — 30 read tools active, 10 write tools opt-in via UI checkboxes (40 tools total)
 - ✅ **Asset-Based Configuration** — Control all tool availability via SOAR UI checkboxes, no SSH required
 - ✅ **COA Visual Editor Stack** — Full playbook graph inspection, validation, diff, and import/export (v1.6.3+)
 - ✅ **AI Instructions Field** — Inject SOC-specific context into every AI session
@@ -254,6 +254,15 @@ These tools provide deep inspection of playbook structure via the COA graph. On 
 | **`validate_playbook_bundle`** | `playbook_id` | Multi-check validation: structure, Python compile/lint, COA integrity, SOAR compat |
 | **`check_visual_editor_compat`** | `playbook_id` | Aggregated compatibility check for the COA Visual Editor |
 
+### Diagnostics & Capability Tools (Read — Default: Enabled)
+
+| Tool | Parameters | Returns |
+|------|-----------|---------|
+| **`diagnose_soar_mcp_environment`** | `output_format` | App version, endpoint shape, handler reachability, `/rest/version` probe, security posture + findings. Reports only token *presence*, never the value. |
+| **`detect_soar_capabilities`** | `playbook_id`, `output_format` | How this SOAR instance behaves: COA graph availability, export fallback, Python payload source, validation method |
+| **`audit_visual_playbook`** | `playbook_id`, `output_format` | One-call pre-edit audit: stale/current, counts, warnings/errors, trigger/type, Python source, validation + drift, recommendations. Verdict pass/warn/fail/**unknown** |
+| **`generate_mcp_client_config`** | _(none)_ | Copy-ready MCP client config snippets (Claude Desktop/Code, Cursor, CLI). Token is always a placeholder — never the real auth token |
+
 ### Write Tools (Default: Disabled) ⚠️
 
 Write tools modify live SOAR data. Enable only after reviewing the [Disclaimer](#️-disclaimer--use-at-your-own-risk) and testing in a non-production environment.
@@ -267,7 +276,7 @@ Write tools modify live SOAR data. Enable only after reviewing the [Disclaimer](
 | **`update_case_status`** | Changes status (open/closed/resolved/new/in_progress) | 🔴 High — can close active investigations |
 | **`run_playbook`** | Triggers automated playbook execution on a case | 🔴 High — executes real response actions |
 | **`import_playbook`** | Imports a playbook from a base64-encoded TAR archive | 🔴 High — can overwrite existing playbooks |
-| **`save_playbook_layout_only`** | Saves node x/y positions to the VPE (layout only, no logic) | 🟡 Low — `dry_run=true` by default |
+| **`save_playbook_layout_only`** | Saves node x/y positions to the VPE (layout only, no logic) | 🟡 Low — `dry_run=true` by default. **Preview-only:** hidden from `tools/list` until the COA write endpoint is verified |
 
 ### Test Harness (Disabled by Default — Never Use on Production) 🚫
 
@@ -305,14 +314,23 @@ All configuration is managed from **SOAR UI → Apps → SOAR MCP Server → Ass
 
 | Field | Type | Purpose |
 |-------|------|---------|
-| **Base URL** | String | SOAR instance URL for Test Connectivity validation |
+| **Base URL** | String | SOAR instance URL. Used for Test Connectivity **and** as the trusted base-URL fallback when `phantom.rest` is unavailable (required once per install — see Step 3) |
 | **Auth Token** | Password | SOAR authorization token |
 | **SSL Verify** | Boolean | Verify TLS certs for handler API callbacks; disable only for test/self-signed instances |
 | **AI Instructions** | Text | Context injected into every MCP session |
-| **enable_test_harness** | Boolean | Enables test harness / `create_container` tool (v1.6.9+) |
+| **enable_test_harness** | Boolean | Enables test harness / `create_container` + `delete_container` (v1.6.9+) |
 | **scoped_tokens_enabled** | Boolean | Enable per-user scoped tokens (v1.5.0+) |
 | **scoped_tokens_required** | Boolean | Reject requests without a valid scoped token |
-| **tool_*** | Boolean × 35 | Enable/disable each tool individually |
+| **tool_*** | Boolean × 40 | Enable/disable each tool individually |
+
+**`mcp.conf`-only settings** (`local/mcp.conf`, applied on Test Connectivity):
+
+| Key (section) | Purpose |
+|---|---|
+| `[server] base_url` / `soar_base_url` | Static trusted SOAR base URL — a persistent alternative to the asset **Base URL** (survives reinstalls); credentials in the URL are rejected |
+| `[safety] require_confirmation` | Two-step commit for **all** write tools (confirm_token + preview → execute); persistent, single-use, TTL |
+| `[safety] test_container_label` | Default/allowed test-container label (default `test`; set to a label your instance has, e.g. `events`) |
+| `[safety] test_container_name_prefix` | Name prefix that marks a container as suite-owned/safe-to-delete (default `mcp_`) |
 
 **Override Precedence (highest → lowest):**
 ```
@@ -486,6 +504,33 @@ tail -f /var/log/phantom/soar/phantom.log | grep soar_mcp_handler
 ---
 
 ## Changelog
+
+### v1.11.6 (2026-07-11)
+- 🐛 **#104 Python 3.13** — manifest `python_version` `"3"` → `"3.13"`; SOAR install-log analysis proved `"3"` was treated as Python 3.9. The app now installs and runs on Python 3.13 (code was already 3.13-clean, CI-gated).
+
+### v1.11.4–v1.11.5 (2026-07-11)
+- 🐛 **#116** — `require_confirmation` confirmed writes now execute: the confirmation store is file-backed (survives SOAR's multi-process handler); token hash only, single-use, TTL.
+- 🐛 **#117** — portable test-harness cleanup: configurable `test_container_label` / `test_container_name_prefix`; `delete_container` recognises suite-owned containers by label **or** name prefix; delete-403 reported as an actionable cleanup finding.
+- 🧹 App package no longer ships `test_*.py` / `scripts/` / `.github/` (enforced by the package linter).
+
+### v1.11.0–v1.11.3 (2026-07-11)
+- ✨ **#68 Capability detection** — `detect_soar_capabilities` + `soar_mcp_capabilities.py`; per-process cache; node/edge tools report *why* a graph is empty.
+- ✨ **#69 `audit_visual_playbook`** — one-call pre-edit audit with pass/warn/fail/**unknown** verdict.
+- 🐛 **#93 base_url** — trusted fallback (asset config + `mcp.conf [server] base_url`) when `phantom.rest` is unavailable; fixes `MissingSchema`; keeps #58's no-header-trust. Credentials in a base_url are rejected.
+
+### v1.9.0–v1.10.0 (2026-07-10)
+- ✨ **#74** structured response envelope; **#70** unified credential-safe error classifier.
+- ✨ **#51** security-posture report in Test Connectivity; **#67** `diagnose_soar_mcp_environment` (read-only).
+- 🐛 **#58/#85 base_url** fail-secure resolution (live-verified on 8.5.0.248).
+
+### v1.8.0 (2026-07-10)
+- ✨ **#71** package-hygiene linter; **#72** `generate_mcp_client_config`; **#66** gated `delete_container`; **#50** optional two-step write confirmation.
+
+### v1.7.0–v1.7.2 (2026-07-10) — Security hardening
+- 🔒 Credential handling: no auth token on unverified TLS (#39), on disk (#40), in action data (#53), or in the widget (#52); `/tmp` debug writers removed (#55).
+- 🔒 Stored-XSS strip in `create_artifact` (#42); `_filter` input sanitized (#49); scoped-token/legacy rate-limiting (#44); Fernet key can live out-of-band (#56); mint token not persisted (#54).
+- 🔒 Write tools **off by default**; `cryptography` declared in `pip3_dependencies` (#43).
+- ✨ SOAR 8.5 COA compatibility series (#34–#38): client-side playbook filters, graph normalization, unified Python selection, `isError` flag, `ssl_verify` asset checkbox.
 
 ### v1.6.9 (2026-07-10)
 - ✨ **`enable_test_harness` as asset config checkbox** — toggle the test harness from the SOAR UI without SSH access. Asset checkbox takes precedence over `mcp.conf [safety]`; falls back to `mcp.conf` when not set.
