@@ -74,9 +74,9 @@ Transform Splunk SOAR into an MCP (Model Context Protocol) server endpoint for d
 
 ## Installation
 
-> **Compatibility:** Developed and verified on **Splunk SOAR On-Prem 8.5.0.248**.
-> The COA Visual Editor tools target SOAR 8.5+. The app runs as a generic
-> Python 3 app and is verified **Python 3.13-ready** (CI-gated).
+> **Compatibility:** Requires **Splunk SOAR On-Prem 8.5+** (`min_phantom_version`
+> = `8.5.0`) — the app runs on **Python 3.13**, which is an 8.5 platform feature.
+> Verified on 8.5.0.248 (product/platform version confirmed via the SOAR logs).
 
 ### Step 1: Install the App
 
