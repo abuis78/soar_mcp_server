@@ -57,6 +57,27 @@ class ConfirmStorePersistenceTest(unittest.TestCase):
             content = fh.read()
         self.assertNotIn(tok, content)  # only the hash is persisted
 
+    def test_two_issuers_do_not_clobber(self):
+        # #127: two store instances (simulating two handler workers) issuing
+        # tokens must both persist — no lost-update from the read-modify-write.
+        t1 = _ConfirmStore(self.path).issue("run_playbook", {"a": 1})
+        t2 = _ConfirmStore(self.path).issue("run_playbook", {"a": 2})
+        self.assertTrue(_ConfirmStore(self.path).consume(t1, "run_playbook", {"a": 1}))
+        self.assertTrue(_ConfirmStore(self.path).consume(t2, "run_playbook", {"a": 2}))
+
+
+class PostureRateLimitTest(unittest.TestCase):
+    """#128: legacy_path_rate_limited reflects the actual limiter condition."""
+
+    def test_reflects_rate_and_limiter_availability(self):
+        from soar_mcp_config import build_posture_report
+        cfg = McpServerConfig()
+        cfg.token_rate_limit_per_minute = 120
+        # _RateLimiter is importable in this env → active when rate > 0.
+        self.assertTrue(build_posture_report(cfg)["legacy_path_rate_limited"])
+        cfg.token_rate_limit_per_minute = 0
+        self.assertFalse(build_posture_report(cfg)["legacy_path_rate_limited"])
+
 
 class _FakeContainerClient:
     def __init__(self, label="events", name="mcp_write_suite_1", delete_err=None,

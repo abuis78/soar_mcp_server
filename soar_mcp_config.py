@@ -255,6 +255,15 @@ def build_posture_report(config: "McpServerConfig") -> dict:
     except Exception:
         fernet_available = False
 
+    # #128: the legacy-path rate limiter is only active when the token store's
+    # _RateLimiter is importable AND a positive limit is configured — mirror the
+    # handler's actual condition, don't report the config value alone.
+    try:
+        from soar_mcp_tokens import _RateLimiter  # noqa: F401
+        _rate_limiter_available = True
+    except Exception:
+        _rate_limiter_available = False
+
     enabled_write = sorted(config.enabled_tools - READ_ONLY_TOOLS)
     ssl = config.ssl_verify if isinstance(config.ssl_verify, bool) else "custom_path"
 
@@ -280,7 +289,8 @@ def build_posture_report(config: "McpServerConfig") -> dict:
         "scoped_tokens_enabled": config.scoped_tokens_enabled,
         "scoped_tokens_required": config.scoped_tokens_required,
         "fernet_available": fernet_available,
-        "legacy_path_rate_limited": config.token_rate_limit_per_minute > 0,
+        "legacy_path_rate_limited": bool(
+            _rate_limiter_available and config.token_rate_limit_per_minute > 0),
         "advisory_disclaimer": config.advisory_disclaimer,
         "risk_flags": risk_flags,
     }

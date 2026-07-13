@@ -20,6 +20,7 @@ Copyright 2026 Andreas Buis
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import logging
@@ -4374,9 +4375,44 @@ class _ConfirmStore:
         return {k: v for k, v in data.items()
                 if isinstance(v, list) and len(v) == 3 and v[2] > now}
 
+    @contextlib.contextmanager
+    def _file_lock(self):
+        """Exclusive cross-process lock around the read-modify-write (#127).
+
+        A per-process threading.Lock is not enough: SOAR's handler is
+        multi-process, so two workers could interleave load/modify/save and drop
+        a concurrently-issued token. flock serialises the critical section across
+        processes. On non-POSIX systems (no fcntl) this degrades to best-effort.
+        """
+        import os as _os
+        try:
+            import fcntl
+        except Exception:
+            yield
+            return
+        # Acquire (setup errors → proceed best-effort without a lock).
+        fd = None
+        try:
+            _os.makedirs(_os.path.dirname(self._path), exist_ok=True)
+            fd = open(self._path + ".lock", "w", encoding="utf-8")
+            fcntl.flock(fd.fileno(), fcntl.LOCK_EX)
+        except Exception:
+            if fd is not None:
+                fd.close()
+            fd = None
+        try:
+            yield
+        finally:
+            if fd is not None:
+                try:
+                    fcntl.flock(fd.fileno(), fcntl.LOCK_UN)
+                except Exception:
+                    pass
+                fd.close()
+
     def issue(self, tool: str, args: dict, ttl: float = 300.0) -> str:
         token = "confirm_" + secrets.token_urlsafe(9)
-        with self._lock:
+        with self._lock, self._file_lock():
             data = self._prune(self._load())
             data[self._token_hash(token)] = [tool, self._args_hash(tool, args), time.time() + ttl]
             self._save(data)
@@ -4384,7 +4420,7 @@ class _ConfirmStore:
 
     def consume(self, token: str, tool: str, args: dict) -> bool:
         th = self._token_hash(str(token))
-        with self._lock:
+        with self._lock, self._file_lock():
             data = self._load()
             entry = data.get(th)
             data = self._prune(data)          # drop expired (incl. possibly this one)
