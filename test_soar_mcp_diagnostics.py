@@ -9,10 +9,11 @@ from soar_mcp_tools import call_tool
 
 
 class _FakeClient:
-    def __init__(self, auth="tok", version="6.3.0", fail=False):
+    def __init__(self, auth="tok", version="6.3.0", fail=False, base_url="https://s/rest"):
         self._auth_token = auth
         self._version = version
         self._fail = fail
+        self._base_url = base_url
 
     def get(self, path, params=None):
         if path == "version" and not self._fail:
@@ -54,6 +55,15 @@ class DiagnosticsTest(unittest.TestCase):
         d = json.loads(out)
         self.assertFalse(d["ok"])
         self.assertTrue(any(f.get("code") == "no_auth_token" for f in d["findings"]))
+
+    def test_missing_base_url_is_reported(self):
+        # #122: after an upgrade wipes local/, base_url can be empty. Diagnose
+        # must still run and surface a base_url_unresolved finding.
+        out = call_tool("diagnose_soar_mcp_environment", {"output_format": "json"},
+                        _FakeClient(base_url="", fail=True), _cfg())
+        d = json.loads(out)
+        self.assertFalse(d["ok"])
+        self.assertTrue(any(f.get("code") == "base_url_unresolved" for f in d["findings"]))
 
 
 if __name__ == "__main__":

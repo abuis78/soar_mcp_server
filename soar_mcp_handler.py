@@ -236,10 +236,17 @@ class SoarMcpRestHandler(dict):
         # Tool calls need a usable base URL. Fail with a clear, actionable error
         # rather than letting a scheme-less/empty base_url produce opaque
         # "MissingSchema" errors deep in every tool (base_url regression).
-        if rpc_method == "tools/call" and not soar_base:
+        # Exception (#122): the read-only diagnostics tool is allowed through
+        # even without a base URL — its whole job is to report *why* the endpoint
+        # is unusable (e.g. base_url lost after an app upgrade wiped local/).
+        _tool_name = (params.get("name") or "").strip() if isinstance(params, dict) else ""
+        if rpc_method == "tools/call" and not soar_base \
+                and _tool_name != "diagnose_soar_mcp_environment":
             return self._error(rpc_id, _JSONRPC_INTERNAL_ERROR,
                 "Could not determine the SOAR base URL. Set 'base_url' in the SOAR "
-                "MCP Server asset configuration and run Test Connectivity.")
+                "MCP Server asset configuration and run Test Connectivity. "
+                "(An app upgrade can remove local/ — re-run Test Connectivity after "
+                "upgrading; see the README 'Upgrades' note.)")
 
         # Build SOAR API client for tool calls
         client = SoarApiClient(soar_base, soar_call_token, config)

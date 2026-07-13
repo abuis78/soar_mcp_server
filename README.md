@@ -142,6 +142,27 @@ All tools are individually enabled/disabled via checkboxes. See [Available Tools
 > *"Could not determine the SOAR base URL"* (by design, never an insecure
 > header-derived fallback).
 
+### Upgrades & Persistence (important)
+
+SOAR **replaces the entire app directory on every install/upgrade**, so anything
+under `local/` is **not** preserved:
+
+| State | Survives upgrade? | Persistent alternative |
+|-------|:---:|---|
+| **Asset config** (Base URL, Auth Token, tool checkboxes, `enable_test_harness`, …) | ✅ yes — stored in SOAR's DB | — (this is the persistent store) |
+| `local/mcp.conf` (incl. `[server] base_url`) | ❌ removed on upgrade | Put **Base URL** in the **asset config** instead |
+| `local/asset_overrides.json` | ❌ removed on upgrade | Re-created by **Test Connectivity** |
+| `local/mcp_tokens.json` (scoped MCP tokens) | ❌ removed on upgrade | **Re-mint** tokens after upgrade |
+
+**After every upgrade:**
+1. Run **Test Connectivity** (re-syncs the asset config → `local/`, restores `base_url`).
+2. If you use scoped MCP tokens, **re-mint** them (`mint mcp token`).
+
+For a persistent `base_url` that does not depend on re-running Test Connectivity,
+set the **asset config Base URL** (survives upgrades) rather than `mcp.conf`
+`[server] base_url` (app-directory-local). `diagnose_soar_mcp_environment`
+reports a clear `base_url_unresolved` finding when this configuration is missing.
+
 ---
 
 ## Connecting Claude

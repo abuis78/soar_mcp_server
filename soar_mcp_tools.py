@@ -4110,6 +4110,20 @@ def tool_diagnose_soar_mcp_environment(
         findings.append({"severity": "error", "code": "no_auth_token",
                          "message": "No ph-auth-token was presented on this request."})
 
+    # #122: an app upgrade wipes local/, so the trusted base_url can disappear.
+    # Surface it explicitly (this tool is exempt from the base_url guard so it
+    # can report exactly this state).
+    base_url_present = bool(getattr(client, "_base_url", ""))
+    if not base_url_present:
+        findings.append({
+            "severity": "error", "code": "base_url_unresolved",
+            "message": ("SOAR base URL could not be resolved (phantom.rest unavailable "
+                        "and no configured base_url). Set the asset config 'Base URL' — "
+                        "which persists across app upgrades — and run Test Connectivity. "
+                        "Note: local/mcp.conf and scoped tokens are removed on upgrade; "
+                        "the asset config is the upgrade-persistent path."),
+        })
+
     # Safe reachability probe: GET /rest/version.
     soar_version = None
     handler_reachable = False
