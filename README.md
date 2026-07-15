@@ -526,6 +526,13 @@ tail -f /var/log/phantom/soar/phantom.log | grep soar_mcp_handler
 
 ## Changelog
 
+### v1.12.0 (2026-07-15)
+- ✨ **#135 Policy layer (gated-autonomous `run_playbook`)** — an unbypassable SOC guard in `call_tool` (the single dispatch chokepoint), **opt-in** via `[policy] enabled` (default off, backwards-compatible). Every `run_playbook` is evaluated to one of **ALLOW / APPROVE_1CLICK / APPROVE_2PERSON / DENY** before dispatch. Category sets the base gate; risk can only escalate, never relax; unknown category ⇒ `default_gate` (fail-safe, never ALLOW). Data-driven `policy/policy_config.json` — categories are extensible without code changes.
+  - **#136 (P1)** decision core + config + 12 unit tests.
+  - **#137 (P2)** guard integration + audit (every decision logged, incl. ALLOW).
+  - **#138 (P3)** distinct-approver approval workflow: held 1-click/2-person runs collect the required approval(s) and then execute. Approver identity = scoped-token `soar_user_id`; **two-person requires two different SOAR users (no self-approval)**; file-backed, fcntl-locked, single-use, TTL store (mirrors #50/#116/#127). Fail-safe: no scoped-token identity ⇒ held, never executed.
+- 🧹 `local/` (per-instance runtime state) is now git-ignored.
+
 ### v1.11.6 (2026-07-11)
 - 🐛 **#104 Python 3.13** — manifest `python_version` `"3"` → `"3.13"`; SOAR install-log analysis proved `"3"` was treated as Python 3.9. The app now installs and runs on Python 3.13 (code was already 3.13-clean, CI-gated).
 
