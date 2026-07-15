@@ -1,0 +1,56 @@
+{
+  "version": 1,
+  "_comment": "Category -> base gate for the run_playbook policy guard (issue #135/#136). Unknown category -> default_gate (fail-safe). Data-driven: extend categories without code changes. Align against the instance's real list_playbooks categories.",
+  "default_gate": "APPROVE_2PERSON",
+
+  "categories": {
+    "Enrichment": "ALLOW",
+    "Identifier Reputation Analysis": "ALLOW",
+    "Identifier Activity Analysis": "ALLOW",
+    "Attribute Lookup": "ALLOW",
+    "Dynamic Analysis": "ALLOW",
+    "Related Tickets Search": "ALLOW",
+
+    "Message Eviction": "APPROVE_1CLICK",
+    "Message Restoration": "ALLOW",
+    "Search and Purge": "APPROVE_1CLICK",
+    "Search and Restore": "ALLOW",
+
+    "Containment": "APPROVE_2PERSON",
+    "Isolation": "APPROVE_2PERSON",
+    "Process Termination": "APPROVE_2PERSON",
+    "Account Locking": "APPROVE_2PERSON",
+    "Account Unlocking": "APPROVE_1CLICK",
+    "Disable Account": "APPROVE_2PERSON",
+    "Enable Account": "APPROVE_1CLICK",
+    "DNS Denylisting": "APPROVE_2PERSON",
+    "Executable Denylisting": "APPROVE_2PERSON",
+    "File Eviction": "APPROVE_2PERSON",
+    "File Collection": "APPROVE_1CLICK",
+    "File Restore": "ALLOW",
+    "Network Restore": "APPROVE_1CLICK",
+    "Response": "APPROVE_2PERSON"
+  },
+
+  "irreversible_categories": [
+    "Containment", "Isolation", "Process Termination", "Account Locking",
+    "Disable Account", "DNS Denylisting", "Executable Denylisting", "File Eviction"
+  ],
+
+  "risk": {
+    "weights": {
+      "asset_criticality": 0.5,
+      "reversibility": 0.3,
+      "low_confidence": 0.2
+    },
+    "escalate_thresholds": {
+      "to_1click": 0.34,
+      "to_2person": 0.67
+    }
+  },
+
+  "always_2person_targets": {
+    "asset_tags": ["domain_controller", "crown_jewel", "ot", "prod_db"],
+    "identity_tags": ["executive", "admin", "service_account"]
+  }
+}
