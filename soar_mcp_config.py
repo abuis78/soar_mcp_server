@@ -194,6 +194,10 @@ class McpServerConfig:
     # also treats a name starting with test_container_name_prefix as suite-owned.
     test_container_label: str = "test"
     test_container_name_prefix: str = "mcp_"
+    # Policy layer (gated-autonomous run_playbook, issue #135). Opt-in. When true,
+    # every run_playbook is evaluated by the policy guard (ALLOW / APPROVE_1CLICK /
+    # APPROVE_2PERSON / DENY) before dispatch. Default off = backwards-compatible.
+    policy_enabled: bool = False
 
     # AI instructions — sent to the LLM in every MCP initialize response
     ai_instructions: str = ""
@@ -377,6 +381,7 @@ class McpConfigLoader:
         config.min_severity = raw_sev if raw_sev in _VALID_SEVERITIES else ""
         config.enable_test_harness = self._get_bool(parser, "safety", "enable_test_harness", False)
         config.require_confirmation = self._get_bool(parser, "safety", "require_confirmation", False)
+        config.policy_enabled = self._get_bool(parser, "policy", "enabled", False)
         config.test_container_label = (
             parser.get("safety", "test_container_label", fallback="test").strip() or "test")
         config.test_container_name_prefix = (
