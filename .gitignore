@@ -4,3 +4,7 @@ __pycache__/
 *.pyc
 *.pyo
 .DS_Store
+
+# Per-instance runtime state (created on the SOAR host, never committed):
+# scoped tokens, pending confirmations (#116), pending approvals (#138), base_url.
+local/

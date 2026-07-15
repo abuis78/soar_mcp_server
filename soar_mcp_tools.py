@@ -4495,12 +4495,26 @@ def _get_policy_layer():
     return _policy_layer
 
 
+_approval_store = None
+
+
+def _get_approval_store():
+    global _approval_store
+    if _approval_store is None:
+        from policy.approvals import ApprovalStore
+        _approval_store = ApprovalStore()
+    return _approval_store
+
+
 def _policy_gate(
-    tool_name: str, arguments: dict, client: SoarApiClient, config: McpServerConfig
+    tool_name: str, arguments: dict, client: SoarApiClient, config: McpServerConfig,
+    actor_id: Optional[str] = None,
 ) -> Optional[str]:
-    """Gated-autonomous run_playbook (#137). Returns a block/hold message, or None
-    to proceed. Only acts on run_playbook when [policy] enabled = true. Every
-    decision is audited (including ALLOW). Fail-safe: any error -> not ALLOW."""
+    """Gated-autonomous run_playbook (#137/#138). Returns a block/hold/approval
+    message, or None to proceed. Only acts on run_playbook when [policy]
+    enabled = true. Every decision is audited (including ALLOW). Fail-safe: any
+    error -> not ALLOW. 1CLICK/2PERSON collect distinct human approval(s) keyed
+    on the scoped-token identity (actor_id) before execution."""
     if tool_name != "run_playbook" or not getattr(config, "policy_enabled", False):
         return None
 
@@ -4538,14 +4552,50 @@ def _policy_gate(
         return None
     if decision.gate == Gate.DENY:
         return f"⛔ Blocked by policy (DENY): {decision.reason}"
-    # 1CLICK / 2PERSON: hold. The approval collection is P3 (#138); until then the
-    # run is held rather than executed — never silently allowed.
-    return (
-        f"⏸ Approval required by policy — {decision.needed_approvers} approver(s).\n"
-        f"  Playbook: {name or pid} | Category: {category or 'unknown'}\n"
-        f"  Gate: {decision.gate.name} — {decision.reason}\n"
-        "Execution is held pending human approval (approval workflow: issue #138)."
-    )
+
+    # 1CLICK / 2PERSON: collect distinct human approval(s) before executing (#138).
+    needed = decision.needed_approvers
+    key_args = {k: v for k, v in arguments.items() if k != "approval_token"}
+    provided = arguments.get("approval_token")
+    head = (f"  Playbook: {name or pid} | Category: {category or 'unknown'} | "
+            f"Gate: {decision.gate.name}\n")
+
+    # The approver identity is the scoped-token soar_user_id. Without a scoped
+    # token there is no accountable approver -> fail-safe HOLD (never executes).
+    if not actor_id:
+        return (
+            f"⏸ Approval required by policy — {needed} distinct approver(s).\n" + head +
+            "  This SOAR MCP token is not a scoped token, so no accountable approver "
+            "identity is available. Mint a scoped MCP token per approver ('mint mcp "
+            "token' action) and retry; execution stays held until then."
+        )
+
+    store = _get_approval_store()
+    if not provided:
+        token = store.issue("run_playbook", key_args, needed)
+        two = "Two DIFFERENT SOAR users must each approve (no self-approval).\n" if needed >= 2 else ""
+        return (
+            f"⏸ Approval required by policy — {needed} distinct approver(s) needed.\n" + head +
+            f"  Reason: {decision.reason}\n\n"
+            "Each approver calls run_playbook again with the SAME arguments plus:\n"
+            f'  approval_token = "{token}"\n' + two +
+            "The token is valid for 10 minutes and only for these exact arguments."
+        )
+
+    res = store.submit(str(provided), "run_playbook", key_args, actor_id)
+    logger.info("[soar_mcp.policy] approval status=%s have=%d need=%d approver=%s pid=%s",
+                res.status, res.have, res.need, actor_id, pid)
+    if res.approved:
+        return None  # fully approved -> fall through to dispatch
+    if res.status == "duplicate":
+        return (f"⏸ You ({actor_id}) already approved this action ({res.have}/{res.need}). "
+                "A DIFFERENT SOAR user must provide the remaining approval.")
+    if res.status == "pending":
+        return (f"⏸ Approval recorded ({res.have}/{res.need}) by {actor_id}. "
+                f"{res.need - res.have} more distinct approver(s) required — call again with "
+                "the same approval_token as a different SOAR user.")
+    return ("⛔ Invalid or expired approval_token (or the arguments changed). Restart the "
+            "approval: call run_playbook without approval_token to obtain a fresh one.")
 
 
 def call_tool(
@@ -4553,9 +4603,13 @@ def call_tool(
     arguments: dict,
     client: SoarApiClient,
     config: McpServerConfig,
+    actor_id: Optional[str] = None,
 ) -> str:
     """
     Dispatch a tool call to its implementation.
+
+    actor_id is the scoped-token soar_user_id of the caller (None for legacy
+    full tokens); the policy layer uses it as the accountable approver identity.
 
     Returns a text string as the MCP content response.
     Never raises; errors are returned as text.
@@ -4563,8 +4617,9 @@ def call_tool(
     handler = _TOOL_HANDLERS.get(tool_name)
     if handler is None:
         return f"Unknown tool: '{tool_name}'"
-    # Policy gate first (gated autonomy) — may block/hold run_playbook (#137).
-    policy_msg = _policy_gate(tool_name, arguments or {}, client, config)
+    # Policy gate first (gated autonomy) — may block/hold/require approval for
+    # run_playbook (#137/#138).
+    policy_msg = _policy_gate(tool_name, arguments or {}, client, config, actor_id)
     if policy_msg is not None:
         return policy_msg
     gate = _maybe_require_confirmation(tool_name, arguments or {}, config)

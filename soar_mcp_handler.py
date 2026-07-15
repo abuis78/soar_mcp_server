@@ -365,7 +365,10 @@ class SoarMcpRestHandler(dict):
             return {"content": [{"type": "text", "text": text}], "isError": True}
 
         self._audit_tool_call(token_verification, tool_name, arguments, outcome="ok")
-        result_text = call_tool(tool_name, arguments, client, config)
+        # Scoped-token identity is the accountable approver for the policy layer
+        # (#138); legacy full tokens have no bound user -> None (fail-safe HOLD).
+        actor_id = token_verification.soar_user_id if token_verification is not None else None
+        result_text = call_tool(tool_name, arguments, client, config, actor_id=actor_id)
         is_error = self._is_tool_error(result_text)
         return {"content": [{"type": "text", "text": result_text}], "isError": is_error}
 
