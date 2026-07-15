@@ -4483,6 +4483,71 @@ def _maybe_require_confirmation(
     )
 
 
+# ── Policy layer gate for run_playbook (gated autonomy, issue #135/#137) ──────
+_policy_layer = None
+
+
+def _get_policy_layer():
+    global _policy_layer
+    if _policy_layer is None:
+        from policy.policy_layer import PolicyLayer
+        _policy_layer = PolicyLayer()
+    return _policy_layer
+
+
+def _policy_gate(
+    tool_name: str, arguments: dict, client: SoarApiClient, config: McpServerConfig
+) -> Optional[str]:
+    """Gated-autonomous run_playbook (#137). Returns a block/hold message, or None
+    to proceed. Only acts on run_playbook when [policy] enabled = true. Every
+    decision is audited (including ALLOW). Fail-safe: any error -> not ALLOW."""
+    if tool_name != "run_playbook" or not getattr(config, "policy_enabled", False):
+        return None
+
+    from policy.policy_layer import ActionContext, Gate
+
+    pid, err = _require_positive_int(arguments.get("playbook_id"), "playbook_id")
+    if err:
+        return None  # let tool_run_playbook report the invalid id itself
+
+    try:
+        policy = _get_policy_layer()
+    except Exception as exc:
+        logger.error("[soar_mcp.policy] layer unavailable: %s -> DENY (fail-safe)", exc)
+        return f"⛔ Blocked by policy: policy layer unavailable ({type(exc).__name__})."
+
+    # Load the playbook category (fail-safe: unknown -> default_gate, never ALLOW).
+    category, name = "", ""
+    pb, _pb_err = client.get(f"playbook/{pid}")
+    if isinstance(pb, dict):
+        category = pb.get("category") or ""
+        name = pb.get("name") or ""
+
+    ctx = ActionContext(
+        playbook_id=pid,
+        playbook_name=name,
+        category=category,
+        reversible=policy.category_is_reversible(category),
+        agent_confidence=arguments.get("agent_confidence", 0.5),
+    )
+    decision = policy.evaluate(ctx)
+    logger.info("[soar_mcp.policy] decision=%s",
+                json.dumps(decision.to_dict(), default=str))
+
+    if decision.gate == Gate.ALLOW:
+        return None
+    if decision.gate == Gate.DENY:
+        return f"⛔ Blocked by policy (DENY): {decision.reason}"
+    # 1CLICK / 2PERSON: hold. The approval collection is P3 (#138); until then the
+    # run is held rather than executed — never silently allowed.
+    return (
+        f"⏸ Approval required by policy — {decision.needed_approvers} approver(s).\n"
+        f"  Playbook: {name or pid} | Category: {category or 'unknown'}\n"
+        f"  Gate: {decision.gate.name} — {decision.reason}\n"
+        "Execution is held pending human approval (approval workflow: issue #138)."
+    )
+
+
 def call_tool(
     tool_name: str,
     arguments: dict,
@@ -4498,6 +4563,10 @@ def call_tool(
     handler = _TOOL_HANDLERS.get(tool_name)
     if handler is None:
         return f"Unknown tool: '{tool_name}'"
+    # Policy gate first (gated autonomy) — may block/hold run_playbook (#137).
+    policy_msg = _policy_gate(tool_name, arguments or {}, client, config)
+    if policy_msg is not None:
+        return policy_msg
     gate = _maybe_require_confirmation(tool_name, arguments or {}, config)
     if gate is not None:
         return gate
