@@ -598,7 +598,17 @@ TOOL_SCHEMAS: dict[str, dict] = {
                 },
                 "playbook_id": {
                     "type": "integer",
-                    "description": "The SOAR playbook ID to run.",
+                    "description": "The SOAR playbook ID to run. Provide this OR playbook_name.",
+                },
+                "playbook_name": {
+                    "type": "string",
+                    "description": (
+                        "The SOAR playbook NAME to run (case-insensitive exact match), as an "
+                        "alternative to playbook_id — use this when the user names the playbook "
+                        "instead of giving an ID. The name is resolved to its ID before the run. "
+                        "If the name is not unique or not found, the run is refused with a "
+                        "candidate list (no guessing). playbook_id wins if both are given."
+                    ),
                 },
                 "scope": {
                     "type": "string",
@@ -607,7 +617,7 @@ TOOL_SCHEMAS: dict[str, dict] = {
                     "default": "new",
                 },
             },
-            "required": ["case_id", "playbook_id"],
+            "required": ["case_id"],
         },
     },
     "update_case_status": {
@@ -1667,7 +1677,12 @@ def tool_run_playbook(client: SoarApiClient, config: McpServerConfig, args: dict
         return err_msg
     playbook_id, err_msg = _require_positive_int(args.get("playbook_id"), "playbook_id")
     if err_msg:
-        return err_msg
+        # call_tool resolves playbook_name -> playbook_id before dispatch (#148);
+        # reaching here with only a name means the name was not resolvable.
+        if args.get("playbook_name"):
+            return (f"Error: playbook_name '{args['playbook_name']}' could not be "
+                    "resolved to a unique ID. Provide a valid playbook_id.")
+        return f"{err_msg} (or pass playbook_name)."
 
     scope = args.get("scope", "new")
     if scope not in ("new", "all"):
@@ -4532,6 +4547,44 @@ def _get_approval_store():
     return _approval_store
 
 
+def _resolve_playbook_id_by_name(name: str, client: SoarApiClient, config: McpServerConfig):
+    """Resolve a playbook name to its numeric ID (issue #148).
+
+    Returns an int on a UNIQUE case-insensitive exact match, or an error/candidate
+    string otherwise. Never guesses: ambiguous or substring-only matches are
+    refused with a candidate list so a name invocation can never run the wrong
+    playbook. Uses the same server-side name filter as list_playbooks (#146) so
+    it searches all playbooks, not just the first page.
+    """
+    q = (name or "").strip()
+    if not q:
+        return "Error: playbook_name is empty."
+
+    params = {
+        "page_size": config.max_results,
+        "_filter_name__icontains": f'"{_safe_filter_value(q)}"',
+    }
+    data, err = client.get("playbook", params=params)
+    if err:
+        return f"Error resolving playbook name '{q}': {err}"
+
+    items = data if isinstance(data, list) else data.get("data", [])
+    exact = [pb for pb in items if str(pb.get("name", "")).strip().lower() == q.lower()]
+
+    if len(exact) == 1:
+        pid, perr = _require_positive_int(exact[0].get("id"), "playbook_id")
+        return pid if not perr else perr
+    if len(exact) > 1:
+        cands = ", ".join(f"{pb.get('name')} (ID {pb.get('id')})" for pb in exact)
+        return (f"Error: multiple playbooks are named '{q}': {cands}. "
+                "Re-run with the exact playbook_id.")
+    if items:
+        cands = ", ".join(f"{pb.get('name')} (ID {pb.get('id')})" for pb in items[:10])
+        return (f"Error: no playbook is exactly named '{q}'. Closest matches: {cands}. "
+                "Re-run with a playbook_id or the exact name.")
+    return f"Error: no playbook found matching name '{q}'."
+
+
 def _policy_gate(
     tool_name: str, arguments: dict, client: SoarApiClient, config: McpServerConfig,
     actor_id: Optional[str] = None,
@@ -4643,18 +4696,32 @@ def call_tool(
     handler = _TOOL_HANDLERS.get(tool_name)
     if handler is None:
         return f"Unknown tool: '{tool_name}'"
+    arguments = arguments or {}
+
+    # Resolve run_playbook's playbook_name -> playbook_id BEFORE any gate, so a
+    # name invocation can never bypass the policy gate (#148). Canonicalize to
+    # playbook_id (drop the name) so name- and id-invocations share the same
+    # approval-token key. playbook_id wins if both are provided.
+    if (tool_name == "run_playbook" and not arguments.get("playbook_id")
+            and arguments.get("playbook_name")):
+        resolved = _resolve_playbook_id_by_name(arguments["playbook_name"], client, config)
+        if not isinstance(resolved, int):
+            return resolved  # error / candidate list — never guess
+        arguments = {k: v for k, v in arguments.items() if k != "playbook_name"}
+        arguments["playbook_id"] = resolved
+
     # Policy gate first (gated autonomy) — may block/hold/require approval for
     # run_playbook (#137/#138).
-    policy_msg = _policy_gate(tool_name, arguments or {}, client, config, actor_id)
+    policy_msg = _policy_gate(tool_name, arguments, client, config, actor_id)
     if policy_msg is not None:
         return policy_msg
-    gate = _maybe_require_confirmation(tool_name, arguments or {}, config)
+    gate = _maybe_require_confirmation(tool_name, arguments, config)
     if gate is not None:
         return gate
     try:
-        result = handler(client, config, arguments or {})
+        result = handler(client, config, arguments)
         if config.log_tool_calls:
-            logger.info("[MCP Tool] Called '%s' with args=%s", tool_name, list((arguments or {}).keys()))
+            logger.info("[MCP Tool] Called '%s' with args=%s", tool_name, list(arguments.keys()))
         return result
     except Exception as exc:
         logger.exception("[MCP Tool] Unexpected error in tool '%s': %s", tool_name, exc)
