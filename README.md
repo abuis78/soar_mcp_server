@@ -295,7 +295,7 @@ Write tools modify live SOAR data. Enable only after reviewing the [Disclaimer](
 | **`update_case_owner`** | Reassigns case to a different analyst | 🟠 Medium — disrupts workflow |
 | **`update_case_severity`** | Changes severity (high/medium/low/informational) | 🟠 Medium — affects SLA/priority |
 | **`update_case_status`** | Changes status (open/closed/resolved/new/in_progress) | 🔴 High — can close active investigations |
-| **`run_playbook`** | Triggers automated playbook execution on a case | 🔴 High — executes real response actions |
+| **`run_playbook`** | Triggers automated playbook execution on a case (by ID **or** name; can be governed by the [Policy Layer](#policy-layer--gated-autonomous-run_playbook)) | 🔴 High — executes real response actions |
 | **`import_playbook`** | Imports a playbook from a base64-encoded TAR archive | 🔴 High — can overwrite existing playbooks |
 | **`save_playbook_layout_only`** | Saves node x/y positions to the VPE (layout only, no logic) | 🟡 Low — `dry_run=true` by default. **Preview-only:** hidden from `tools/list` until the COA write endpoint is verified |
 
@@ -391,6 +391,46 @@ enable_test_harness = false
 ```
 
 **Applying File Changes:** Run **Test Connectivity** after editing. No restart required.
+
+---
+
+## Policy Layer — Gated-Autonomous `run_playbook`
+
+> Since **v1.12.0**. Opt-in, default **off**. 📖 **Full details:
+> [docs/policy-layer.md](docs/policy-layer.md).**
+
+An **unbypassable SOC guard** in the single execution chokepoint (`call_tool`) that
+governs every `run_playbook`. Instead of "the AI can run playbooks", you get
+**graded autonomy** — each run is evaluated to one of four gates **before** it can
+execute:
+
+| Gate | Effect |
+|------|--------|
+| `ALLOW` | Runs autonomously (still audited) |
+| `APPROVE_1CLICK` | Held for **one** human approval |
+| `APPROVE_2PERSON` | Held for **two different** human approvals (no self-approval) |
+| `DENY` | Blocked |
+
+**How the gate is chosen:** `final = max(base, risk, target_override)` — the playbook
+**category** sets the base gate (data-driven in [`policy/policy_config.json`](policy/policy_config.json)),
+risk can only **escalate** (never relax), and critical asset/identity targets force
+2-person. **Fail-safe:** an unknown category, a config/load error, or a missing
+approver identity **holds or denies — never auto-runs**.
+
+**Approvals** reuse scoped MCP tokens for the approver identity (`soar_user_id`);
+the token store is file-backed, `fcntl`-locked, single-use, and TTL-bound.
+
+**Enable it (recommended):** Asset config → check **`policy_enabled`** and
+**`tool_run_playbook`** → Save → Test Connectivity → **reconnect your MCP client once**.
+Advanced: `[policy] enabled = true` in `local/mcp.conf`.
+
+**Quick test:** point `run_playbook` at a `Containment`-category playbook → expect
+`⏸ Approval required by policy — 2 distinct approver(s)` instead of a run. Set the
+category to `Enrichment` → it runs (`ALLOW`). Every decision is logged as
+`[soar_mcp.policy]` in `phantom.log`. See
+[docs/policy-layer.md](docs/policy-layer.md) for the decision algorithm, risk
+formula, approval flow, config reference, fail-safe guarantees, and the full test
+procedure.
 
 ---
 
