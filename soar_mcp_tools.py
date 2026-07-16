@@ -4330,21 +4330,31 @@ _CF_SECRET_PATTERNS = (
 
 
 def _cf_summary(cf: dict) -> dict:
-    """Compact, safe metadata for one custom function. Never includes the source."""
-    return {
+    """Compact, safe metadata for one custom function. Never includes the source.
+
+    Reports ONLY what the payload actually carries (#157): the list projection on
+    SOAR 8.5 omits scm_id/inputs/outputs, and emitting `input_count: 0` or
+    `scm_id: null` there would present "not returned" as "none" — a silent
+    falsehood the agent would then build on. Absent field -> key omitted.
+    """
+    out: dict = {
         "id": cf.get("id"),
         "name": cf.get("name"),
         "description": (cf.get("description") or "")[:300],
-        "scm_id": cf.get("scm_id"),
         "draft_mode": bool(cf.get("draft_mode")),
         "disabled": cf.get("disabled"),
         "passed_validation": cf.get("passed_validation"),
         # commit_sha is the natural optimistic-concurrency token for S2 updates.
         "revision": cf.get("commit_sha"),
-        "input_count": len(cf.get("inputs") or []),
-        "output_count": len(cf.get("outputs") or []),
-        "playbook_count": len(cf.get("playbooks") or []),
     }
+    if cf.get("scm_id") is not None:
+        out["scm_id"] = cf["scm_id"]
+    for field, count_key in (("inputs", "input_count"),
+                             ("outputs", "output_count"),
+                             ("playbooks", "playbook_count")):
+        if field in cf:
+            out[count_key] = len(cf.get(field) or [])
+    return out
 
 
 def tool_list_custom_functions(client: SoarApiClient, config: McpServerConfig, args: dict) -> str:
@@ -4375,11 +4385,28 @@ def tool_list_custom_functions(client: SoarApiClient, config: McpServerConfig, a
     if not include_drafts:
         fns = [f for f in fns if not f["draft_mode"]]
 
+    findings: list = []
+    # The 8.5 list projection omits scm_id/inputs/outputs — say so rather than
+    # letting the caller read the missing counts as "none" (#157).
+    if any(isinstance(cf, dict) and "inputs" not in cf for cf in items):
+        findings.append({
+            "severity": "info", "code": "LIST_PROJECTION_SPARSE",
+            "message": "This list projection omits scm_id/inputs/outputs, so per-function "
+                       "counts are not reported here. Use get_custom_function"
+                       "(custom_function_id=...) for the full record.",
+        })
+    if total > len(fns):
+        findings.append({
+            "severity": "info", "code": "CAP_TRUNCATED",
+            "message": f"Showing {len(fns)} of {total} custom function(s). Narrow the result "
+                       'with name="<substring>" or scm_id=<id> — both filter server-side.',
+        })
+
     summary = f"{len(fns)} custom function(s)" + (f" matching name '{name}'" if name else "")
     return envelope_response(
         True, summary,
         data={"count": len(fns), "total_reported": total, "custom_functions": fns},
-        fmt=fmt)
+        findings=findings, fmt=fmt)
 
 
 def tool_get_custom_function(client: SoarApiClient, config: McpServerConfig, args: dict) -> str:
@@ -4404,17 +4431,35 @@ def tool_get_custom_function(client: SoarApiClient, config: McpServerConfig, arg
             fmt=fmt)
 
     out = _cf_summary(data)
-    out["inputs"] = data.get("inputs") or []
-    out["outputs"] = data.get("outputs") or []
-    # Native SOAR validation results ride along on the object — no extra call needed.
-    out["warnings"] = data.get("warnings") or []
-    out["errors"] = data.get("errors") or []
-    out["playbooks"] = [
-        {"id": p.get("id"), "name": p.get("name"), "active": p.get("active")}
-        for p in (data.get("playbooks") or []) if isinstance(p, dict)
-    ]
+    if "inputs" in data:
+        out["inputs"] = data.get("inputs") or []
+    if "outputs" in data:
+        out["outputs"] = data.get("outputs") or []
+    if "playbooks" in data:
+        out["playbooks"] = [
+            {"id": p.get("id"), "name": p.get("name"), "active": p.get("active")}
+            for p in (data.get("playbooks") or []) if isinstance(p, dict)
+        ]
+    # Fields this build returns beyond the documented set — is_read_only gates any
+    # future write (S2); python_version/version belong in the function contract.
+    for extra in ("is_read_only", "python_version", "version"):
+        if extra in data:
+            out[extra] = data[extra]
+    # Native validation detail is NOT returned by every build (8.5.0.248 omits it on
+    # GET). Only report what came back — never default to [] and imply "none" (#157).
+    validation_detail = False
+    for key in ("warnings", "errors"):
+        if key in data:
+            out[key] = data.get(key) or []
+            validation_detail = True
 
     findings: list = []
+    if not validation_detail:
+        findings.append({
+            "severity": "info", "code": "VALIDATION_DETAIL_UNAVAILABLE",
+            "message": "This SOAR build does not return warnings/errors for a custom function "
+                       "on GET, so passed_validation alone is not a reliable quality signal.",
+        })
     if args.get("include_source", False):
         src = data.get("python")
         if isinstance(src, str):
@@ -4438,7 +4483,10 @@ def tool_get_custom_function(client: SoarApiClient, config: McpServerConfig, arg
             findings.append({"severity": "info", "code": "SOURCE_UNAVAILABLE",
                              "message": "No 'python' source field in the response."})
 
-    if data.get("passed_validation") is False:
+    # Only warn when there is something to look at: on 8.5.0.248 passed_validation is
+    # false for every function (incl. Splunk's own), so warning on the flag alone is
+    # pure noise (#157).
+    if data.get("passed_validation") is False and (out.get("warnings") or out.get("errors")):
         findings.append({"severity": "warn", "code": "NOT_PASSED_VALIDATION",
                          "message": "SOAR reports passed_validation=false — see warnings/errors."})
 
