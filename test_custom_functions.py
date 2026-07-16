@@ -18,17 +18,27 @@ _CF_TOOLS = ("list_custom_functions", "get_custom_function",
 
 
 def _cf(cf_id=1, name="normalize_domain", draft=False, source=None):
+    """A DETAIL record (GET /rest/custom_function/<id>)."""
     d = {
-        "id": cf_id, "name": name, "scm_id": 1, "description": "desc",
+        "id": cf_id, "name": name, "scm_id": 2, "description": "desc",
         "draft_mode": draft, "disabled": False, "passed_validation": True,
-        "commit_sha": "7e08d23", "inputs": [{"name": "domain"}],
+        "commit_sha": "7e08d23", "inputs": [{"name": "domain", "input_type": "item"}],
         "outputs": [{"data_path": "normalized"}],
         "playbooks": [{"id": 5, "name": "pb", "active": True}],
-        "warnings": [], "errors": [],
+        "is_read_only": False, "python_version": "3.13", "version": 1,
     }
     if source is not None:
         d["python"] = source
     return d
+
+
+def _cf_list_row(cf_id=1, name="normalize_domain", draft=False):
+    """A LIST row as SOAR 8.5.0.248 really returns it: scm_id null, no inputs/outputs."""
+    return {
+        "id": cf_id, "name": name, "scm_id": None, "description": "desc",
+        "draft_mode": draft, "disabled": False, "passed_validation": False,
+        "commit_sha": "7e08d23",
+    }
 
 
 class _FakeClient:
@@ -88,6 +98,34 @@ class ListCustomFunctionsTest(unittest.TestCase):
         self.assertNotIn("source", fn)
         self.assertNotIn("python", fn)
 
+    def test_sparse_list_row_omits_counts_instead_of_faking_zero(self):
+        # #157: SOAR's list projection has no inputs/outputs/scm_id. Reporting 0/null
+        # would tell the agent "no inputs" when the truth is "not returned".
+        c = _FakeClient(items=[_cf_list_row()])
+        env = _json(tool_list_custom_functions(c, _cfg(), {"output_format": "json"}))
+        fn = env["data"]["custom_functions"][0]
+        for absent in ("input_count", "output_count", "playbook_count", "scm_id"):
+            self.assertNotIn(absent, fn, absent)
+        self.assertIn("LIST_PROJECTION_SPARSE", [f["code"] for f in env["findings"]])
+
+    def test_full_row_does_report_counts(self):
+        c = _FakeClient(items=[_cf()])
+        env = _json(tool_list_custom_functions(c, _cfg(), {"output_format": "json"}))
+        fn = env["data"]["custom_functions"][0]
+        self.assertEqual(fn["input_count"], 1)
+        self.assertEqual(fn["scm_id"], 2)
+        self.assertNotIn("LIST_PROJECTION_SPARSE", [f["code"] for f in env["findings"]])
+
+    def test_cap_truncation_is_disclosed(self):
+        class _Capped(_FakeClient):
+            def get(self, path, params=None):
+                if path == "custom_function":
+                    return {"data": [_cf_list_row(1, "a")], "count": 157}, None
+                return super().get(path, params)
+        env = _json(tool_list_custom_functions(_Capped(), _cfg(), {"output_format": "json"}))
+        codes = [f["code"] for f in env["findings"]]
+        self.assertIn("CAP_TRUNCATED", codes)
+
     def test_name_uses_server_side_filter(self):
         c = _FakeClient()
         tool_list_custom_functions(c, _cfg(), {"name": "normalize", "output_format": "json"})
@@ -116,7 +154,8 @@ class GetCustomFunctionTest(unittest.TestCase):
         self.assertTrue(env["ok"])
         self.assertNotIn("source", env["data"])          # opt-in only
         self.assertIn("playbooks", env["data"])          # associations are free
-        self.assertIn("warnings", env["data"])           # native validation rides along
+        # NOTE: warnings/errors are NOT asserted here — 8.5.0.248 does not return them
+        # on GET, and faking them as [] is exactly the defect #157 fixed.
 
     def test_source_included_on_request_with_hash(self):
         src = "def f(): return 1"
@@ -136,13 +175,41 @@ class GetCustomFunctionTest(unittest.TestCase):
         codes = [f["code"] for f in env["findings"]]
         self.assertIn("SOURCE_MAY_CONTAIN_SECRETS", codes)
 
-    def test_failed_validation_raises_finding(self):
+    def test_failed_validation_warns_only_with_evidence(self):
+        # #157: with warnings present the warn is actionable...
+        d = _cf()
+        d["passed_validation"] = False
+        d["warnings"] = ["line 3: unused import"]
+        c = _FakeClient(detail=d)
+        env = _json(tool_get_custom_function(
+            c, _cfg(), {"custom_function_id": 1, "output_format": "json"}))
+        self.assertIn("NOT_PASSED_VALIDATION", [f["code"] for f in env["findings"]])
+
+    def test_failed_validation_alone_is_not_noise(self):
+        # ...but on 8.5.0.248 passed_validation is false for EVERY function and no
+        # warnings/errors are returned -> warning on the flag alone would be noise.
         d = _cf()
         d["passed_validation"] = False
         c = _FakeClient(detail=d)
         env = _json(tool_get_custom_function(
             c, _cfg(), {"custom_function_id": 1, "output_format": "json"}))
-        self.assertIn("NOT_PASSED_VALIDATION", [f["code"] for f in env["findings"]])
+        codes = [f["code"] for f in env["findings"]]
+        self.assertNotIn("NOT_PASSED_VALIDATION", codes)
+        self.assertIn("VALIDATION_DETAIL_UNAVAILABLE", codes)
+
+    def test_warnings_absent_are_not_faked_as_empty(self):
+        c = _FakeClient(detail=_cf())          # build returns no warnings/errors on GET
+        env = _json(tool_get_custom_function(
+            c, _cfg(), {"custom_function_id": 1, "output_format": "json"}))
+        self.assertNotIn("warnings", env["data"])   # never claim "no warnings"
+        self.assertNotIn("errors", env["data"])
+
+    def test_safety_fields_passed_through(self):
+        c = _FakeClient(detail=_cf())
+        env = _json(tool_get_custom_function(
+            c, _cfg(), {"custom_function_id": 1, "output_format": "json"}))
+        self.assertIs(env["data"]["is_read_only"], False)   # S2 write gate
+        self.assertEqual(env["data"]["python_version"], "3.13")
 
     def test_bad_id_is_envelope_error(self):
         c = _FakeClient()
