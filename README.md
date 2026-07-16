@@ -526,6 +526,9 @@ tail -f /var/log/phantom/soar/phantom.log | grep soar_mcp_handler
 
 ## Changelog
 
+### v1.12.3 (2026-07-16)
+- ✨ **#148 `run_playbook` by name** — `run_playbook` now accepts `playbook_name` as an alternative to `playbook_id`, so *"run playbook X"* works without the user hunting for a numeric ID. Resolution is **safe and never guesses**: a unique case-insensitive **exact** name match runs; 0 matches, name-not-unique, or substring-only matches are **refused with a candidate list** (name + ID). The name is resolved to its ID in `call_tool` **before the policy gate**, so a name invocation can never bypass the gate; name- and ID-invocations canonicalize to the same approval-token key. `playbook_id` wins if both are given.
+
 ### v1.12.2 (2026-07-16)
 - 🐛 **#146 `list_playbooks` run-by-name** — resolving a playbook by name failed: the list capped at `max_results` (e.g. 50 of 427) with no search, and `active_only=true` (the old default) hid runnable-but-inactive playbooks. Now: new `name` argument → **server-side `_filter_name__icontains`** (searches *all* playbooks, not just the first page); `active_only` default flipped to **false** (a playbook runs by ID even when inactive); capped lists explicitly hint to use `name=`. Flow: `list_playbooks(name="X")` → ID → `run_playbook(ID)`.
 
