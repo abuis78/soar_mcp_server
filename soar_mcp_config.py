@@ -283,6 +283,10 @@ def build_posture_report(config: "McpServerConfig") -> dict:
         risk_flags.append("scoped_tokens_without_fernet_encryption")
     if config.scoped_tokens_enabled and not config.scoped_tokens_required and enabled_write:
         risk_flags.append("legacy_full_tokens_still_accepted")
+    # run_playbook executes response actions; without the policy gate every run is
+    # autonomous. Flag ungated execution so the posture reflects it (#151).
+    if "run_playbook" in config.enabled_tools and not config.policy_enabled:
+        risk_flags.append("run_playbook_without_policy_gate")
 
     return {
         "write_tools_enabled": config.write_tools_enabled,
@@ -290,6 +294,7 @@ def build_posture_report(config: "McpServerConfig") -> dict:
         "ssl_verify": ssl,
         "enable_test_harness": config.enable_test_harness,
         "require_confirmation": config.require_confirmation,
+        "policy_enabled": config.policy_enabled,
         "scoped_tokens_enabled": config.scoped_tokens_enabled,
         "scoped_tokens_required": config.scoped_tokens_required,
         "fernet_available": fernet_available,
