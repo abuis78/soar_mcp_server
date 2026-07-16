@@ -15,6 +15,28 @@ Transform Splunk SOAR into an MCP (Model Context Protocol) server endpoint for d
 
 ---
 
+## Overview
+
+**In one sentence:** this app turns your Splunk SOAR instance into an MCP server endpoint, so an AI client can talk to SOAR directly through structured, analyst-focused tools.
+
+### How it works
+- Runs as a **REST handler** inside SOAR at `https://<your-soar>/rest/handler/soarmcpserver_<appid>/<asset>`
+- Speaks the **MCP protocol** (JSON-RPC 2.0 over HTTP/SSE), authenticated with a `ph-auth-token` header
+- The handler calls SOAR's internal **REST API** and translates it into analyst-friendly MCP tools
+- **Fully on-premises** — the app itself adds no cloud dependency and performs no external data transfer
+
+### The tool model
+- **40 tools total:** 30 read-only (enabled by default) + 10 write tools (opt-in per SOAR UI checkbox)
+- **Read:** inspect cases, artifacts, playbooks, and notes; inspect, validate, and diff the COA playbook graph
+- **Write (deliberately opt-in):** add notes, change case status/severity/owner, create artifacts, `run_playbook` (triggers real response actions), and `import_playbook`
+- Tool availability and all configuration are controlled entirely through **asset-config checkboxes** — no SSH required
+- **Scoped tokens** (per-user, revocable, optionally tool-restricted) plus an **audit trail** via SOAR's native logging
+
+### Core value and the risk it carries
+The app is the **bridge between an AI analyst and your SOAR automation**. Read-only is the safe default; once write tools are enabled, the AI can **act live** within the permissions of the configured SOAR user — playbooks may change firewall rules, quarantine mail, isolate endpoints, and more. Always apply **least privilege**: run with a dedicated read-only service account and enable write tools only after validating behaviour in a non-production environment. For `run_playbook` specifically, see the [Policy Layer](#policy-layer--gated-autonomous-run_playbook), which can gate execution behind explicit approval rules.
+
+---
+
 ## ⚠️ Disclaimer — Use at Your Own Risk
 
 > **This is an independently developed community app. It is NOT an official Splunk product and is provided "as-is", without warranty of any kind, express or implied.**
