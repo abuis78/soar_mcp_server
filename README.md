@@ -526,6 +526,9 @@ tail -f /var/log/phantom/soar/phantom.log | grep soar_mcp_handler
 
 ## Changelog
 
+### v1.12.1 (2026-07-16)
+- ✨ **#144** — the policy layer is now togglable from the **asset-config UI** (checkbox *policy_enabled*), no more hand-editing `local/mcp.conf`. Consistent with `enable_test_harness` / `scoped_tokens_enabled`: the connector persists the checkbox to `local/asset_overrides.json` and the handler applies it per request (UI value takes precedence over `mcp.conf`; unset ⇒ `mcp.conf` fallback). Default off (backwards-compatible).
+
 ### v1.12.0 (2026-07-15)
 - ✨ **#135 Policy layer (gated-autonomous `run_playbook`)** — an unbypassable SOC guard in `call_tool` (the single dispatch chokepoint), **opt-in** via `[policy] enabled` (default off, backwards-compatible). Every `run_playbook` is evaluated to one of **ALLOW / APPROVE_1CLICK / APPROVE_2PERSON / DENY** before dispatch. Category sets the base gate; risk can only escalate, never relax; unknown category ⇒ `default_gate` (fail-safe, never ALLOW). Data-driven `policy/policy_config.json` — categories are extensible without code changes.
   - **#136 (P1)** decision core + config + 12 unit tests.

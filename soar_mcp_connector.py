@@ -159,6 +159,11 @@ class SoarMcpConnector(BaseConnector):
         eth_val = asset_cfg.get("enable_test_harness")
         enable_test_harness = bool(eth_val) if eth_val is not None else None
 
+        # policy_enabled checkbox (#144) — None means "not set in asset config,
+        # fall back to mcp.conf [policy] value".
+        pol_val = asset_cfg.get("policy_enabled")
+        policy_enabled = bool(pol_val) if pol_val is not None else None
+
         ssl_val = asset_cfg.get("ssl_verify")
         ssl_verify = bool(ssl_val) if ssl_val is not None else None
 
@@ -177,6 +182,7 @@ class SoarMcpConnector(BaseConnector):
             "tools": tool_overrides,
             "ai_instructions": ai_instructions,
             "enable_test_harness": enable_test_harness,
+            "policy_enabled": policy_enabled,
             "ssl_verify": ssl_verify,
             "asset_name": self._asset_name,
             "base_url": self._base_url,

@@ -465,6 +465,12 @@ class McpConfigLoader:
         if eth is not None:
             config.enable_test_harness = bool(eth)
 
+        # Apply policy_enabled override (#144). None = not set in asset config →
+        # keep the mcp.conf [policy] value. The UI checkbox takes precedence.
+        pol = overrides.get("policy_enabled")
+        if pol is not None:
+            config.policy_enabled = bool(pol)
+
         ssl_override = overrides.get("ssl_verify")
         if ssl_override is not None:
             if isinstance(ssl_override, bool):
