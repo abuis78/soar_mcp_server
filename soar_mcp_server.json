@@ -8,8 +8,8 @@
     "product_version_regex": ".*",
     "publisher": "Andreas Buis",
     "license": "Copyright 2026 Andreas Buis",
-    "app_version": "1.12.0",
-    "utctime_updated": "2026-07-15T12:00:00.000000Z",
+    "app_version": "1.12.1",
+    "utctime_updated": "2026-07-16T12:00:00.000000Z",
     "package_name": "phantom_soar_mcp_server",
     "main_module": "soar_mcp_connector.py",
     "min_phantom_version": "8.5.0",
@@ -194,6 +194,13 @@
             "default": false,
             "required": false,
             "order": 41
+        },
+        "policy_enabled": {
+            "description": "Policy layer (gated-autonomous run_playbook, issue #135). When enabled, every run_playbook is evaluated by an unbypassable SOC guard before dispatch (ALLOW / APPROVE_1CLICK / APPROVE_2PERSON / DENY): category sets the base gate, risk can only escalate, unknown category is held (never auto-run). 1-click/2-person runs collect distinct human approval(s) via scoped MCP tokens before executing. Category -> gate mapping is data-driven (policy/policy_config.json). Default off (backwards-compatible).",
+            "data_type": "boolean",
+            "default": false,
+            "required": false,
+            "order": 42
         },
         "tool_list_apps": {
             "description": "READ \u2014 list_apps: List installed SOAR apps/connectors (name, vendor, supported actions). Used by the playbook-builder skill for connector discovery.",
