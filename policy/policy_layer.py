@@ -92,6 +92,7 @@ class PolicyLayer:
         }
         self._risk = self._cfg.get("risk", {}) or {}
         self._targets = self._cfg.get("always_2person_targets", {}) or {}
+        self._asset_ctx = self._cfg.get("asset_context", {}) or {}
 
     @staticmethod
     def _load(path: Union[str, Path]) -> dict:
@@ -106,6 +107,44 @@ class PolicyLayer:
     def category_is_reversible(self, category: str) -> bool:
         """Ground truth for reversibility from config (irreversible list)."""
         return str(category).lower() not in self._irreversible
+
+    @property
+    def asset_context_enabled(self) -> bool:
+        """True if the config defines an asset_context tag map (Phase 4, #139)."""
+        return bool(self._asset_ctx.get("asset_tags") or self._asset_ctx.get("identity_tags"))
+
+    @staticmethod
+    def _match_tags(values: list, tag_map: dict, exact: bool) -> set:
+        """Return the set of tags whose patterns match any of the given values."""
+        vals = [str(v).strip().lower() for v in values if str(v).strip()]
+        tags = set()
+        for tag, patterns in (tag_map or {}).items():
+            for pat in (patterns or []):
+                p = str(pat).strip().lower()
+                if not p:
+                    continue
+                if any(p == v for v in vals) if exact else any(p in v for v in vals):
+                    tags.add(tag)
+                    break
+        return tags
+
+    def enrich(self, values: list) -> dict:
+        """Derive target tags + asset_criticality from observed artifact values.
+
+        Only ESCALATES: matched crown-jewel asset tags set asset_criticality=1.0 and,
+        together with matched identity tags, feed the target override in evaluate().
+        No match -> empty tags / 0.0 (never relaxes the base gate). Fail-safe.
+        """
+        exact = str(self._asset_ctx.get("match", "substring")).lower() == "exact"
+        asset_tags = self._match_tags(values, self._asset_ctx.get("asset_tags", {}), exact)
+        identity_tags = self._match_tags(values, self._asset_ctx.get("identity_tags", {}), exact)
+        crown = set(self._targets.get("asset_tags", []))
+        criticality = 1.0 if (asset_tags & crown) else 0.0
+        return {
+            "target_asset_tags": sorted(asset_tags),
+            "target_identity_tags": sorted(identity_tags),
+            "asset_criticality": criticality,
+        }
 
     def evaluate(self, ctx: ActionContext) -> PolicyDecision:
         # 1) Base gate from category (unknown -> fail-safe default, never ALLOW).

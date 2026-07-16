@@ -92,12 +92,23 @@ A `Containment` playbook → base `APPROVE_2PERSON`; even with perfect confidenc
 zero criticality the risk gate is `ALLOW`, but `max(2PERSON, ALLOW, …) = 2PERSON`.
 It is **held for two approvers** — exactly what a host-isolation action should require.
 
-> **Honest scope (as of v1.12.3):** in the live path the guard currently populates
-> only **category** (→ base gate) and `agent_confidence` (default `0.5`).
-> `asset_criticality` and the target tags are **not yet sourced from live SOAR data**,
-> so risk-escalation and the target override are dormant in production until
-> **Phase 4 (#139)** wires an asset/identity tag map. The base-gate + fail-safe path
-> is fully active and is what governs runs today.
+> **Live inputs (as of v1.12.4):** the guard populates **category** (→ base gate),
+> `agent_confidence` (default `0.5`), and — when `asset_context` is configured — the
+> **target asset/identity tags + `asset_criticality`** derived from the case's
+> artifacts (Phase 4, #139, see §3d). The target override and risk-escalation are
+> therefore active in production. External asset sources (ES Entity / Lansweeper)
+> remain a later increment; today's ground truth is the case's own artifacts.
+
+### 3d. Live enrichment — target tags from case artifacts (Phase 4, #139)
+When `policy_config.json` defines an **`asset_context`** section, the guard fetches
+the target case's artifacts (`GET artifact?_filter_container_id=<case_id>`), collects
+their CEF values (plus artifact name/label), and matches them against the tag map to
+produce `target_asset_tags` / `target_identity_tags` and `asset_criticality`. Example:
+a case artifact `destinationHostName = dc01.corp` → tag `domain_controller` →
+`always_2person_targets` → **`APPROVE_2PERSON`**, even for an otherwise-`ALLOW`
+`Enrichment` playbook. Enrichment can only **escalate**: no match, a fetch error, or a
+missing `asset_context` section yields no tags and leaves the base gate untouched
+(opt-in; only instances that configure `asset_context` incur the extra fetch).
 
 ---
 
@@ -164,7 +175,8 @@ against your instance's real `list_playbooks` categories.
 | `irreversible_categories` | Categories treated as non-reversible (feeds the risk `reversibility` term). |
 | `risk.weights` | Weights for `asset_criticality`, `reversibility`, `low_confidence`. |
 | `risk.escalate_thresholds` | `to_1click` / `to_2person` cutoffs on the `0..1` risk score. |
-| `always_2person_targets` | `asset_tags` / `identity_tags` that force `APPROVE_2PERSON` (Phase 4). |
+| `always_2person_targets` | `asset_tags` / `identity_tags` that force `APPROVE_2PERSON`. |
+| `asset_context` | Phase 4 tag map: `asset_tags` / `identity_tags` (each `tag → [match patterns]`) + `match` (`substring`\|`exact`). Derives target tags from case-artifact CEF values. Absent/empty ⇒ enrichment disabled. |
 
 **Shipped category map (excerpt):**
 
@@ -235,11 +247,11 @@ index=* "[soar_mcp.policy]" | table _time, host, _raw
 
 ## 10. Roadmap / known gaps
 
-- **Phase 4 (#139)** — asset/identity context enrichment: source `asset_criticality`
-  and the target tags from case artifacts (config-driven tag map) so risk-escalation
-  and the target override become active in the live path.
-- **Diagnostics** — `diagnose_soar_mcp_environment` does not yet report `policy_enabled`
-  in the security posture (planned).
+- ✅ **Phase 4 (#139)** — asset/identity enrichment from case artifacts: **done** in
+  v1.12.4 (see §3d). External asset sources (ES Entity / Lansweeper) remain a future
+  increment for richer criticality signals.
+- ✅ **Diagnostics (#151)** — `diagnose_soar_mcp_environment` now reports
+  `policy_enabled` and flags an ungated `run_playbook` (`run_playbook_without_policy_gate`).
 
 ---
 

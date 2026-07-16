@@ -4547,6 +4547,31 @@ def _get_approval_store():
     return _approval_store
 
 
+def _collect_case_artifact_values(client: SoarApiClient, config: McpServerConfig, case_id: int) -> list:
+    """Observable string values from a case's artifacts (CEF values + name/label),
+    for policy asset/identity enrichment (#139). Best-effort; returns [] on error."""
+    values: list = []
+    data, err = client.get(
+        "artifact", params={"_filter_container_id": case_id, "page_size": config.max_results})
+    if err:
+        return values
+    items = data if isinstance(data, list) else (
+        data.get("data", []) if isinstance(data, dict) else [])
+    for art in items:
+        if not isinstance(art, dict):
+            continue
+        for key in ("name", "label"):
+            v = art.get(key)
+            if isinstance(v, str) and v.strip():
+                values.append(v)
+        cef = art.get("cef")
+        if isinstance(cef, dict):
+            for v in cef.values():
+                if isinstance(v, (str, int, float)) and str(v).strip():
+                    values.append(str(v))
+    return values
+
+
 def _resolve_playbook_id_by_name(name: str, client: SoarApiClient, config: McpServerConfig):
     """Resolve a playbook name to its numeric ID (issue #148).
 
@@ -4616,12 +4641,30 @@ def _policy_gate(
         category = pb.get("category") or ""
         name = pb.get("name") or ""
 
+    # Asset/identity enrichment (#139): derive target tags from the case's
+    # artifact CEF values so critical targets force 2-person live. Opt-in
+    # (asset_context in config) and fail-safe (any error -> no tags, never relaxes).
+    enrich = {"target_asset_tags": [], "target_identity_tags": [], "asset_criticality": 0.0}
+    case_id, _cerr = _require_positive_int(arguments.get("case_id"), "case_id")
+    if policy.asset_context_enabled and not _cerr:
+        try:
+            values = _collect_case_artifact_values(client, config, case_id)
+            enrich = policy.enrich(values)
+            if enrich["target_asset_tags"] or enrich["target_identity_tags"]:
+                logger.info("[soar_mcp.policy] enrichment case=%s asset_tags=%s identity_tags=%s",
+                            case_id, enrich["target_asset_tags"], enrich["target_identity_tags"])
+        except Exception as exc:
+            logger.warning("[soar_mcp.policy] enrichment failed (case=%s): %s -> no tags", case_id, exc)
+
     ctx = ActionContext(
         playbook_id=pid,
         playbook_name=name,
         category=category,
         reversible=policy.category_is_reversible(category),
         agent_confidence=arguments.get("agent_confidence", 0.5),
+        asset_criticality=enrich["asset_criticality"],
+        target_asset_tags=enrich["target_asset_tags"],
+        target_identity_tags=enrich["target_identity_tags"],
     )
     decision = policy.evaluate(ctx)
     logger.info("[soar_mcp.policy] decision=%s",

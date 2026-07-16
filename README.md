@@ -566,6 +566,10 @@ tail -f /var/log/phantom/soar/phantom.log | grep soar_mcp_handler
 
 ## Changelog
 
+### v1.12.4 (2026-07-16)
+- ✨ **#139 Policy Phase 4 — asset/identity enrichment** — the policy guard now derives **target tags from the case's artifacts** (CEF values matched against a config tag map, new `asset_context` section). Critical targets force 2-person **live**: e.g. a case artifact `dc01.corp` → `domain_controller` → `APPROVE_2PERSON`, even for an otherwise-`ALLOW` `Enrichment` playbook. Opt-in (only if `asset_context` is configured), fail-safe (no match / fetch error / no section ⇒ no tags, never relaxes the base gate). Completes epic #135.
+- ✨ **#151 Policy visibility in diagnostics** — `diagnose_soar_mcp_environment` / the security posture now report `policy_enabled` and raise a `run_playbook_without_policy_gate` flag when `run_playbook` is enabled but the gate is off.
+
 ### v1.12.3 (2026-07-16)
 - ✨ **#148 `run_playbook` by name** — `run_playbook` now accepts `playbook_name` as an alternative to `playbook_id`, so *"run playbook X"* works without the user hunting for a numeric ID. Resolution is **safe and never guesses**: a unique case-insensitive **exact** name match runs; 0 matches, name-not-unique, or substring-only matches are **refused with a candidate list** (name + ID). The name is resolved to its ID in `call_tool` **before the policy gate**, so a name invocation can never bypass the gate; name- and ID-invocations canonicalize to the same approval-token key. `playbook_id` wins if both are given.
 

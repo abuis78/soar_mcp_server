@@ -52,5 +52,21 @@
   "always_2person_targets": {
     "asset_tags": ["domain_controller", "crown_jewel", "ot", "prod_db"],
     "identity_tags": ["executive", "admin", "service_account"]
+  },
+
+  "_asset_context_comment": "Phase 4 (#139): derive target tags from the case's artifact CEF values, so critical assets/identities force 2-person live. Each tag maps to case-insensitive match patterns; 'match' is 'substring' (default) or 'exact'. Tag names must match always_2person_targets. Absent/empty section -> enrichment disabled (no extra artifact fetch), behaviour unchanged. Align patterns to your naming conventions.",
+  "asset_context": {
+    "match": "substring",
+    "asset_tags": {
+      "domain_controller": ["dc0", "dc1", "dc2", "domaincontroller", "-dc-", ".dc."],
+      "crown_jewel": ["crown", "hsm", "vault", "ca-root"],
+      "prod_db": ["prod-db", "proddb", "prod_db", "prd-sql", "prod-sql"],
+      "ot": ["scada", "-plc", "plc-", "-ot-", "ics-", "historian"]
+    },
+    "identity_tags": {
+      "executive": ["ceo", "cfo", "cto", "ciso", "coo", "president"],
+      "admin": ["administrator", "domain admin", "-adm", "adm-"],
+      "service_account": ["svc_", "svc-", "service_account", "sa_", "-svc"]
+    }
   }
 }
