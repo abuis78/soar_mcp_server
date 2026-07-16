@@ -4314,6 +4314,296 @@ TOOL_SCHEMAS["delete_container"] = {
 }
 
 
+# ── Custom Function discovery (read-only, issue #155) ─────────────────────────
+# Verified REST contract (Splunk SOAR REST API reference):
+#   list   GET  /rest/custom_function
+#   read   GET  /rest/custom_function/<id>
+#   create POST /rest/custom_function            (write — slice S2)
+#   update POST /rest/custom_function/<id>       (POST, NOT PUT — no client change needed)
+#   export GET  /rest/custom_function/<id>/export
+# DELETE is NOT documented by Splunk -> reported as "unknown", never assumed.
+_CF_SOURCE_MAX_CHARS = 20000
+_CF_SECRET_PATTERNS = (
+    "password", "passwd", "api_key", "apikey", "secret", "client_secret",
+    "-----begin", "authorization:", "ph-auth-token",
+)
+
+
+def _cf_summary(cf: dict) -> dict:
+    """Compact, safe metadata for one custom function. Never includes the source."""
+    return {
+        "id": cf.get("id"),
+        "name": cf.get("name"),
+        "description": (cf.get("description") or "")[:300],
+        "scm_id": cf.get("scm_id"),
+        "draft_mode": bool(cf.get("draft_mode")),
+        "disabled": cf.get("disabled"),
+        "passed_validation": cf.get("passed_validation"),
+        # commit_sha is the natural optimistic-concurrency token for S2 updates.
+        "revision": cf.get("commit_sha"),
+        "input_count": len(cf.get("inputs") or []),
+        "output_count": len(cf.get("outputs") or []),
+        "playbook_count": len(cf.get("playbooks") or []),
+    }
+
+
+def tool_list_custom_functions(client: SoarApiClient, config: McpServerConfig, args: dict) -> str:
+    """List custom functions (read-only)."""
+    from soar_mcp_envelope import envelope_response, normalize_output_format
+    fmt = normalize_output_format(args.get("output_format"))
+
+    name = (args.get("name") or "").strip()
+    include_drafts = args.get("include_drafts", True)
+    params: dict = {"page_size": config.max_results}
+    if name:
+        # server-side search so it works across all functions, not just page 1 (cf. #146)
+        params["_filter_name__icontains"] = f'"{_safe_filter_value(name)}"'
+    scm_id = args.get("scm_id")
+    if isinstance(scm_id, int):
+        params["_filter_scm_id"] = scm_id
+
+    data, err = client.get("custom_function", params=params)
+    if err:
+        return envelope_response(
+            False, f"Could not list custom functions: {err}",
+            errors=[{"code": "CF_LIST_FAILED", "safe_message": str(err)}], fmt=fmt)
+
+    items = data if isinstance(data, list) else (
+        data.get("data", []) if isinstance(data, dict) else [])
+    total = data.get("count", len(items)) if isinstance(data, dict) else len(items)
+    fns = [_cf_summary(cf) for cf in items if isinstance(cf, dict)]
+    if not include_drafts:
+        fns = [f for f in fns if not f["draft_mode"]]
+
+    summary = f"{len(fns)} custom function(s)" + (f" matching name '{name}'" if name else "")
+    return envelope_response(
+        True, summary,
+        data={"count": len(fns), "total_reported": total, "custom_functions": fns},
+        fmt=fmt)
+
+
+def tool_get_custom_function(client: SoarApiClient, config: McpServerConfig, args: dict) -> str:
+    """Get one custom function's metadata, I/O spec, associations and (opt-in) source."""
+    from soar_mcp_envelope import envelope_response, normalize_output_format
+    fmt = normalize_output_format(args.get("output_format"))
+
+    cf_id, err_msg = _require_positive_int(args.get("custom_function_id"), "custom_function_id")
+    if err_msg:
+        return envelope_response(False, err_msg,
+                                 errors=[{"code": "BAD_INPUT", "safe_message": err_msg}], fmt=fmt)
+
+    data, err = client.get(f"custom_function/{cf_id}")
+    if err:
+        return envelope_response(
+            False, f"Could not read custom function {cf_id}: {err}",
+            errors=[{"code": "CF_READ_FAILED", "safe_message": str(err)}], fmt=fmt)
+    if not isinstance(data, dict):
+        return envelope_response(
+            False, f"Unexpected response for custom function {cf_id}.",
+            errors=[{"code": "CF_UNEXPECTED_RESPONSE", "safe_message": "not a JSON object"}],
+            fmt=fmt)
+
+    out = _cf_summary(data)
+    out["inputs"] = data.get("inputs") or []
+    out["outputs"] = data.get("outputs") or []
+    # Native SOAR validation results ride along on the object — no extra call needed.
+    out["warnings"] = data.get("warnings") or []
+    out["errors"] = data.get("errors") or []
+    out["playbooks"] = [
+        {"id": p.get("id"), "name": p.get("name"), "active": p.get("active")}
+        for p in (data.get("playbooks") or []) if isinstance(p, dict)
+    ]
+
+    findings: list = []
+    if args.get("include_source", False):
+        src = data.get("python")
+        if isinstance(src, str):
+            out["source_sha256"] = hashlib.sha256(src.encode("utf-8")).hexdigest()
+            out["source_truncated"] = len(src) > _CF_SOURCE_MAX_CHARS
+            out["source"] = src[:_CF_SOURCE_MAX_CHARS]
+            if out["source_truncated"]:
+                findings.append({
+                    "severity": "warn", "code": "SOURCE_TRUNCATED",
+                    "message": f"Source exceeds {_CF_SOURCE_MAX_CHARS} chars and was truncated; "
+                               "source_sha256 covers the full source.",
+                })
+            low = src.lower()
+            if any(p in low for p in _CF_SECRET_PATTERNS):
+                findings.append({
+                    "severity": "warn", "code": "SOURCE_MAY_CONTAIN_SECRETS",
+                    "message": "Source matches credential-like patterns. Review before sharing; "
+                               "never commit secrets into a custom function.",
+                })
+        else:
+            findings.append({"severity": "info", "code": "SOURCE_UNAVAILABLE",
+                             "message": "No 'python' source field in the response."})
+
+    if data.get("passed_validation") is False:
+        findings.append({"severity": "warn", "code": "NOT_PASSED_VALIDATION",
+                         "message": "SOAR reports passed_validation=false — see warnings/errors."})
+
+    return envelope_response(True, f"Custom function {cf_id}: {out.get('name') or '(unnamed)'}",
+                             data=out, findings=findings, fmt=fmt)
+
+
+def tool_detect_custom_function_capabilities(
+    client: SoarApiClient, config: McpServerConfig, args: dict
+) -> str:
+    """Read-only probe of what this instance supports for custom functions.
+
+    Never performs a write probe. Anything not positively observed is reported as
+    'unknown' — capabilities are never advertised on the strength of documentation
+    alone.
+    """
+    from soar_mcp_envelope import envelope_response, normalize_output_format
+    fmt = normalize_output_format(args.get("output_format"))
+
+    caps: dict = {}
+    evidence: list = []
+    findings: list = []
+    observed_fields: list = []
+    repositories: list = []
+
+    # 1) list probe (GET, read-only)
+    data, err = client.get("custom_function", params={"page_size": 1})
+    list_ok = err is None
+    caps["list"] = "supported" if list_ok else "unsupported"
+    evidence.append({"operation": "list", "endpoint": "rest/custom_function",
+                     "result": "ok" if list_ok else "error", "source": "live_probe"})
+    if not list_ok:
+        findings.append({"severity": "error", "code": "CF_LIST_FAILED",
+                         "message": f"Cannot list custom functions: {err}"})
+
+    # 2) read probe — only against an id the list already returned
+    probe_id = None
+    if list_ok:
+        items = data if isinstance(data, list) else (
+            data.get("data", []) if isinstance(data, dict) else [])
+        if items and isinstance(items[0], dict):
+            probe_id = items[0].get("id")
+    if probe_id is not None:
+        detail, derr = client.get(f"custom_function/{probe_id}")
+        read_ok = derr is None and isinstance(detail, dict)
+        caps["read"] = "supported" if read_ok else "unsupported"
+        evidence.append({"operation": "read", "endpoint": "rest/custom_function/<id>",
+                         "result": "ok" if read_ok else "error", "source": "live_probe"})
+        if read_ok:
+            observed_fields = sorted(str(k) for k in detail.keys())
+            caps["revision_token"] = "supported" if detail.get("commit_sha") else "unknown"
+            caps["native_validation_fields"] = (
+                "supported" if "passed_validation" in detail else "unknown")
+            caps["associations"] = "supported" if "playbooks" in detail else "unknown"
+            caps["draft_mode_field"] = "supported" if "draft_mode" in detail else "unknown"
+            caps["source_field"] = "supported" if "python" in detail else "unknown"
+    else:
+        caps["read"] = "unknown"
+        findings.append({"severity": "info", "code": "NO_PROBE_TARGET",
+                         "message": "No custom function available to probe read access."})
+
+    # 3) repositories — needed to resolve scm_id before any create (S2)
+    scm, serr = client.get("scm", params={"page_size": config.max_results})
+    if serr is None:
+        rs = scm.get("data", []) if isinstance(scm, dict) else (scm if isinstance(scm, list) else [])
+        repositories = [{"id": r.get("id"), "name": r.get("name")}
+                        for r in rs if isinstance(r, dict)]
+        caps["repositories"] = "supported"
+    else:
+        caps["repositories"] = "unknown"
+    evidence.append({"operation": "repositories", "endpoint": "rest/scm",
+                     "result": "ok" if serr is None else "error", "source": "live_probe"})
+
+    # 4) Not probed here — writes/destructive ops are never write-probed (fail-safe).
+    #    'documented' = Splunk documents the endpoint but this instance was not verified.
+    for op in ("create_draft", "update_draft", "export"):
+        caps[op] = "unknown"
+    caps["delete_draft"] = "unknown"        # NOT documented by Splunk at all
+    caps["publish"] = "unknown"
+    caps["runtime_test"] = "unknown"        # slice S3
+    caps["direct_result_read"] = "unknown"  # no documented REST endpoint found
+
+    findings.append({
+        "severity": "info", "code": "WRITE_OPS_NOT_PROBED",
+        "message": "create/update/export are documented by Splunk but were NOT write-probed; "
+                   "delete is not documented at all. All report 'unknown' by design.",
+    })
+
+    ok = list_ok
+    summary = ("Custom function capabilities detected."
+               if ok else "Custom function surface unavailable — see findings.")
+    return envelope_response(
+        ok, summary,
+        data={
+            "app_version": config.server_version,
+            "capabilities": caps,
+            "repositories": repositories,
+            "observed_fields": observed_fields,
+            "evidence": evidence,
+        },
+        findings=findings, fmt=fmt)
+
+
+TOOL_SCHEMAS["list_custom_functions"] = {
+    "description": (
+        "READ — List Splunk SOAR custom functions with id, name, draft_mode, "
+        "passed_validation, revision (commit_sha) and input/output/playbook counts. "
+        "Use name= for a server-side substring search across all functions. "
+        "Never returns source code. Use output_format=json for structured output."
+    ),
+    "inputSchema": {
+        "type": "object",
+        "properties": {
+            "name": {"type": "string",
+                     "description": "Optional case-insensitive substring match on the name."},
+            "scm_id": {"type": "integer",
+                       "description": "Optional repository (SCM) id filter. Resolve ids via "
+                                      "detect_custom_function_capabilities."},
+            "include_drafts": {"type": "boolean",
+                               "description": "Include draft functions (default: true).",
+                               "default": True},
+            "output_format": {"type": "string", "enum": ["text", "json"], "default": "text"},
+        },
+    },
+}
+
+TOOL_SCHEMAS["get_custom_function"] = {
+    "description": (
+        "READ — Get one custom function: metadata, inputs/outputs spec, SOAR's native "
+        "validation result (passed_validation + warnings/errors), associated playbooks, "
+        "and the revision token. Source code is returned only with include_source=true "
+        "(size-limited; source_sha256 always covers the full source)."
+    ),
+    "inputSchema": {
+        "type": "object",
+        "properties": {
+            "custom_function_id": {"type": "integer", "description": "The custom function ID."},
+            "include_source": {
+                "type": "boolean",
+                "description": "Include the Python source (default: false — source may contain "
+                               "sensitive logic/credentials).",
+                "default": False,
+            },
+            "output_format": {"type": "string", "enum": ["text", "json"], "default": "text"},
+        },
+        "required": ["custom_function_id"],
+    },
+}
+
+TOOL_SCHEMAS["detect_custom_function_capabilities"] = {
+    "description": (
+        "READ — Probe what this SOAR instance actually supports for custom functions "
+        "(list/read/repositories/revision token/native validation/associations). "
+        "Read-only: never write-probes. Operations that were not positively observed are "
+        "reported as 'unknown' rather than assumed. Run this before any custom-function work."
+    ),
+    "inputSchema": {
+        "type": "object",
+        "properties": {
+            "output_format": {"type": "string", "enum": ["text", "json"], "default": "text"},
+        },
+    },
+}
+
+
 _TOOL_HANDLERS = {
     "list_cases": tool_list_cases,
     "get_case": tool_get_case,
@@ -4361,6 +4651,10 @@ _TOOL_HANDLERS = {
     "delete_container": tool_delete_container,
     # Diagnostics (v1.9.0+)
     "diagnose_soar_mcp_environment": tool_diagnose_soar_mcp_environment,
+    # Custom Function discovery (read-only, #155)
+    "list_custom_functions": tool_list_custom_functions,
+    "get_custom_function": tool_get_custom_function,
+    "detect_custom_function_capabilities": tool_detect_custom_function_capabilities,
     # Capability detection (v1.10.0+)
     "detect_soar_capabilities": tool_detect_soar_capabilities,
     # Visual playbook pre-edit audit (v1.11.0+)

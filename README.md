@@ -6,7 +6,7 @@ Transform Splunk SOAR into an MCP (Model Context Protocol) server endpoint for d
 
 **Key Features:**
 - ✅ **100% On-Premises** — No cloud services, no data exfiltration
-- ✅ **Read-Only by Default** — 30 read tools active, 10 write tools opt-in via UI checkboxes (40 tools total)
+- ✅ **Read-Only by Default** — 33 read tools active, 10 write tools opt-in via UI checkboxes (43 tools total)
 - ✅ **Asset-Based Configuration** — Control all tool availability via SOAR UI checkboxes, no SSH required
 - ✅ **COA Visual Editor Stack** — Full playbook graph inspection, validation, diff, and import/export (v1.6.3+)
 - ✅ **AI Instructions Field** — Inject SOC-specific context into every AI session
@@ -26,7 +26,7 @@ Transform Splunk SOAR into an MCP (Model Context Protocol) server endpoint for d
 - **Fully on-premises** — the app itself adds no cloud dependency and performs no external data transfer
 
 ### The tool model
-- **40 tools total:** 30 read-only (enabled by default) + 10 write tools (opt-in per SOAR UI checkbox)
+- **43 tools total:** 33 read-only (enabled by default) + 10 write tools (opt-in per SOAR UI checkbox)
 - **Read:** inspect cases, artifacts, playbooks, and notes; inspect, validate, and diff the COA playbook graph
 - **Write (deliberately opt-in):** add notes, change case status/severity/owner, create artifacts, `run_playbook` (triggers real response actions), and `import_playbook`
 - Tool availability and all configuration are controlled entirely through **asset-config checkboxes** — no SSH required
@@ -587,6 +587,10 @@ tail -f /var/log/phantom/soar/phantom.log | grep soar_mcp_handler
 ---
 
 ## Changelog
+
+### v1.13.0 (2026-07-16)
+- ✨ **#155 Custom Functions — read-only discovery (slice S1)** — three new READ tools (43 tools total: 33 read / 10 write): `list_custom_functions` (server-side `name=` search, never returns source), `get_custom_function` (metadata, inputs/outputs, SOAR's native validation result, associated playbooks; source only via explicit `include_source=true`, size-limited + `source_sha256`), and `detect_custom_function_capabilities` (read-only probe; **never write-probes**; anything not positively observed reports `unknown` rather than being assumed from documentation).
+  - Verified against the official REST contract: `GET/POST /rest/custom_function`, `GET/POST /rest/custom_function/<id>` (update is **POST, not PUT** — no HTTP-client change needed). `commit_sha` is surfaced as the `revision` token for optimistic concurrency in the upcoming draft-write slice; `passed_validation`/`warnings`/`errors` and `playbooks` (associations) ride along on the object for free. **DELETE is not documented by Splunk** and is reported as `unknown`.
 
 ### v1.12.4 (2026-07-16)
 - ✨ **#139 Policy Phase 4 — asset/identity enrichment** — the policy guard now derives **target tags from the case's artifacts** (CEF values matched against a config tag map, new `asset_context` section). Critical targets force 2-person **live**: e.g. a case artifact `dc01.corp` → `domain_controller` → `APPROVE_2PERSON`, even for an otherwise-`ALLOW` `Enrichment` playbook. Opt-in (only if `asset_context` is configured), fail-safe (no match / fetch error / no section ⇒ no tags, never relaxes the base gate). Completes epic #135.
