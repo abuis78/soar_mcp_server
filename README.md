@@ -526,6 +526,9 @@ tail -f /var/log/phantom/soar/phantom.log | grep soar_mcp_handler
 
 ## Changelog
 
+### v1.12.2 (2026-07-16)
+- 🐛 **#146 `list_playbooks` run-by-name** — resolving a playbook by name failed: the list capped at `max_results` (e.g. 50 of 427) with no search, and `active_only=true` (the old default) hid runnable-but-inactive playbooks. Now: new `name` argument → **server-side `_filter_name__icontains`** (searches *all* playbooks, not just the first page); `active_only` default flipped to **false** (a playbook runs by ID even when inactive); capped lists explicitly hint to use `name=`. Flow: `list_playbooks(name="X")` → ID → `run_playbook(ID)`.
+
 ### v1.12.1 (2026-07-16)
 - ✨ **#144** — the policy layer is now togglable from the **asset-config UI** (checkbox *policy_enabled*), no more hand-editing `local/mcp.conf`. Consistent with `enable_test_harness` / `scoped_tokens_enabled`: the connector persists the checkbox to `local/asset_overrides.json` and the handler applies it per request (UI value takes precedence over `mcp.conf`; unset ⇒ `mcp.conf` fallback). Default off (backwards-compatible).
 

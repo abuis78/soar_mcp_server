@@ -471,14 +471,26 @@ TOOL_SCHEMAS: dict[str, dict] = {
         "inputSchema": {
             "type": "object",
             "properties": {
+                "name": {
+                    "type": "string",
+                    "description": (
+                        "Optional case-insensitive substring match on the playbook name "
+                        "(server-side filter). Use this to resolve a playbook's numeric ID "
+                        "by name before calling run_playbook — it searches ALL playbooks, "
+                        "not just the first page."
+                    ),
+                },
                 "category": {
                     "type": "string",
                     "description": "Optional filter by playbook category.",
                 },
                 "active_only": {
                     "type": "boolean",
-                    "description": "Return only active playbooks (default: true).",
-                    "default": True,
+                    "description": (
+                        "Return only active playbooks (default: false). Note: a playbook can "
+                        "be run by ID even when inactive, so leave this false to find it."
+                    ),
+                    "default": False,
                 },
             },
         },
@@ -1410,10 +1422,17 @@ def tool_list_case_notes(client: SoarApiClient, config: McpServerConfig, args: d
 
 def tool_list_playbooks(client: SoarApiClient, config: McpServerConfig, args: dict) -> str:
     """List available SOAR playbooks."""
-    active_only = args.get("active_only", True)
+    # Default false: a playbook runs by ID even when inactive, and filtering by
+    # active hides those from name resolution (issue #146).
+    active_only = args.get("active_only", False)
     category = (args.get("category", "") or "").strip()
+    name = (args.get("name", "") or "").strip()
 
     params: dict = {"page_size": config.max_results}
+    # Server-side name search so it works across ALL playbooks, not just the
+    # first page (the REST list is capped at page_size / max_results).
+    if name:
+        params["_filter_name__icontains"] = f'"{_safe_filter_value(name)}"'
 
     data, err = client.get("playbook", params=params)
     if err:
@@ -1427,10 +1446,17 @@ def tool_list_playbooks(client: SoarApiClient, config: McpServerConfig, args: di
         cat = category.lower()
         items = [pb for pb in items if cat in str(pb.get("category", "")).lower()]
     if not items:
-        return "No playbooks found."
+        hint = (f" matching name '{name}'" if name else "") + (
+            f" in category '{category}'" if category else "")
+        return f"No playbooks found{hint}."
 
     count_label = f"{len(items)} of {total}" if total > len(items) else str(len(items))
-    lines = [f"Available playbooks ({count_label}):\n"]
+    capped = not name and total > len(items)
+    header = f"Available playbooks ({count_label}):"
+    if capped:
+        header += ("\n  ⚠️ List is capped — pass name=\"<substring>\" to search ALL "
+                   "playbooks by name and get the exact ID.")
+    lines = [header + "\n"]
     for pb in items:
         status = "active" if pb.get("active") else "inactive"
         lines.append(
