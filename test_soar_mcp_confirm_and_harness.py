@@ -79,6 +79,41 @@ class PostureRateLimitTest(unittest.TestCase):
         self.assertFalse(build_posture_report(cfg)["legacy_path_rate_limited"])
 
 
+class PolicyPostureVisibilityTest(unittest.TestCase):
+    """#151: posture surfaces policy_enabled and flags ungated run_playbook."""
+
+    def test_policy_enabled_is_reported(self):
+        from soar_mcp_config import build_posture_report
+        cfg = McpServerConfig()
+        self.assertIn("policy_enabled", build_posture_report(cfg))
+        cfg.policy_enabled = True
+        self.assertTrue(build_posture_report(cfg)["policy_enabled"])
+
+    def test_flag_set_when_run_playbook_enabled_without_policy(self):
+        from soar_mcp_config import build_posture_report
+        cfg = McpServerConfig()
+        cfg.enabled_tools = set(cfg.enabled_tools) | {"run_playbook"}
+        cfg.policy_enabled = False
+        self.assertIn("run_playbook_without_policy_gate",
+                      build_posture_report(cfg)["risk_flags"])
+
+    def test_flag_absent_when_policy_enabled(self):
+        from soar_mcp_config import build_posture_report
+        cfg = McpServerConfig()
+        cfg.enabled_tools = set(cfg.enabled_tools) | {"run_playbook"}
+        cfg.policy_enabled = True
+        self.assertNotIn("run_playbook_without_policy_gate",
+                         build_posture_report(cfg)["risk_flags"])
+
+    def test_flag_absent_when_run_playbook_disabled(self):
+        from soar_mcp_config import build_posture_report
+        cfg = McpServerConfig()
+        cfg.enabled_tools = {t for t in cfg.enabled_tools if t != "run_playbook"}
+        cfg.policy_enabled = False
+        self.assertNotIn("run_playbook_without_policy_gate",
+                         build_posture_report(cfg)["risk_flags"])
+
+
 class _FakeContainerClient:
     def __init__(self, label="events", name="mcp_write_suite_1", delete_err=None,
                  get_err=None):
