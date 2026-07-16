@@ -8,8 +8,8 @@
     "product_version_regex": ".*",
     "publisher": "Andreas Buis",
     "license": "Copyright 2026 Andreas Buis",
-    "app_version": "1.12.4",
-    "utctime_updated": "2026-07-16T18:00:00.000000Z",
+    "app_version": "1.13.0",
+    "utctime_updated": "2026-07-16T20:00:00.000000Z",
     "package_name": "phantom_soar_mcp_server",
     "main_module": "soar_mcp_connector.py",
     "min_phantom_version": "8.5.0",
@@ -194,6 +194,27 @@
             "default": false,
             "required": false,
             "order": 41
+        },
+        "tool_list_custom_functions": {
+            "description": "READ — list_custom_functions: List custom functions (id, name, draft_mode, passed_validation, revision). Never returns source code.",
+            "data_type": "boolean",
+            "default": true,
+            "required": false,
+            "order": 85
+        },
+        "tool_get_custom_function": {
+            "description": "READ — get_custom_function: Get one custom function (metadata, inputs/outputs, SOAR validation result, associated playbooks). Source only on explicit include_source=true.",
+            "data_type": "boolean",
+            "default": true,
+            "required": false,
+            "order": 86
+        },
+        "tool_detect_custom_function_capabilities": {
+            "description": "READ — detect_custom_function_capabilities: Read-only probe of what this instance supports for custom functions. Never write-probes; unverified operations report 'unknown'.",
+            "data_type": "boolean",
+            "default": true,
+            "required": false,
+            "order": 87
         },
         "policy_enabled": {
             "description": "Policy layer (gated-autonomous run_playbook, issue #135). When enabled, every run_playbook is evaluated by an unbypassable SOC guard before dispatch (ALLOW / APPROVE_1CLICK / APPROVE_2PERSON / DENY): category sets the base gate, risk can only escalate, unknown category is held (never auto-run). 1-click/2-person runs collect distinct human approval(s) via scoped MCP tokens before executing. Category -> gate mapping is data-driven (policy/policy_config.json). Default off (backwards-compatible).",

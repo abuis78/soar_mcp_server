@@ -110,6 +110,10 @@ ALL_TOOLS: list[str] = [
     "detect_soar_capabilities",
     # Visual playbook pre-edit audit (v1.11.0+)
     "audit_visual_playbook",
+    # Custom Function discovery — read-only (v1.13.0+, #155)
+    "list_custom_functions",
+    "get_custom_function",
+    "detect_custom_function_capabilities",
 ]
 
 READ_ONLY_TOOLS: frozenset[str] = frozenset(
@@ -150,6 +154,10 @@ READ_ONLY_TOOLS: frozenset[str] = frozenset(
         "detect_soar_capabilities",
         # Visual playbook pre-edit audit (v1.11.0+)
         "audit_visual_playbook",
+        # Custom Function discovery — read-only (v1.13.0+, #155)
+        "list_custom_functions",
+        "get_custom_function",
+        "detect_custom_function_capabilities",
     ]
 )
 

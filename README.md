@@ -6,12 +6,34 @@ Transform Splunk SOAR into an MCP (Model Context Protocol) server endpoint for d
 
 **Key Features:**
 - ✅ **100% On-Premises** — No cloud services, no data exfiltration
-- ✅ **Read-Only by Default** — 30 read tools active, 10 write tools opt-in via UI checkboxes (40 tools total)
+- ✅ **Read-Only by Default** — 33 read tools active, 10 write tools opt-in via UI checkboxes (43 tools total)
 - ✅ **Asset-Based Configuration** — Control all tool availability via SOAR UI checkboxes, no SSH required
 - ✅ **COA Visual Editor Stack** — Full playbook graph inspection, validation, diff, and import/export (v1.6.3+)
 - ✅ **AI Instructions Field** — Inject SOC-specific context into every AI session
 - ✅ **Scoped MCP Tokens** — Per-user, revocable, optionally tool-restricted tokens (v1.5.0+)
 - ✅ **Audit Trail** — All tool calls logged via SOAR's native audit system
+
+---
+
+## Overview
+
+**In one sentence:** this app turns your Splunk SOAR instance into an MCP server endpoint, so an AI client can talk to SOAR directly through structured, analyst-focused tools.
+
+### How it works
+- Runs as a **REST handler** inside SOAR at `https://<your-soar>/rest/handler/soarmcpserver_<appid>/<asset>`
+- Speaks the **MCP protocol** (JSON-RPC 2.0 over HTTP/SSE), authenticated with a `ph-auth-token` header
+- The handler calls SOAR's internal **REST API** and translates it into analyst-friendly MCP tools
+- **Fully on-premises** — the app itself adds no cloud dependency and performs no external data transfer
+
+### The tool model
+- **43 tools total:** 33 read-only (enabled by default) + 10 write tools (opt-in per SOAR UI checkbox)
+- **Read:** inspect cases, artifacts, playbooks, and notes; inspect, validate, and diff the COA playbook graph
+- **Write (deliberately opt-in):** add notes, change case status/severity/owner, create artifacts, `run_playbook` (triggers real response actions), and `import_playbook`
+- Tool availability and all configuration are controlled entirely through **asset-config checkboxes** — no SSH required
+- **Scoped tokens** (per-user, revocable, optionally tool-restricted) plus an **audit trail** via SOAR's native logging
+
+### Core value and the risk it carries
+The app is the **bridge between an AI analyst and your SOAR automation**. Read-only is the safe default; once write tools are enabled, the AI can **act live** within the permissions of the configured SOAR user — playbooks may change firewall rules, quarantine mail, isolate endpoints, and more. Always apply **least privilege**: run with a dedicated read-only service account and enable write tools only after validating behaviour in a non-production environment. For `run_playbook` specifically, see the [Policy Layer](#policy-layer--gated-autonomous-run_playbook), which can gate execution behind explicit approval rules.
 
 ---
 
@@ -565,6 +587,10 @@ tail -f /var/log/phantom/soar/phantom.log | grep soar_mcp_handler
 ---
 
 ## Changelog
+
+### v1.13.0 (2026-07-16)
+- ✨ **#155 Custom Functions — read-only discovery (slice S1)** — three new READ tools (43 tools total: 33 read / 10 write): `list_custom_functions` (server-side `name=` search, never returns source), `get_custom_function` (metadata, inputs/outputs, SOAR's native validation result, associated playbooks; source only via explicit `include_source=true`, size-limited + `source_sha256`), and `detect_custom_function_capabilities` (read-only probe; **never write-probes**; anything not positively observed reports `unknown` rather than being assumed from documentation).
+  - Verified against the official REST contract: `GET/POST /rest/custom_function`, `GET/POST /rest/custom_function/<id>` (update is **POST, not PUT** — no HTTP-client change needed). `commit_sha` is surfaced as the `revision` token for optimistic concurrency in the upcoming draft-write slice; `passed_validation`/`warnings`/`errors` and `playbooks` (associations) ride along on the object for free. **DELETE is not documented by Splunk** and is reported as `unknown`.
 
 ### v1.12.4 (2026-07-16)
 - ✨ **#139 Policy Phase 4 — asset/identity enrichment** — the policy guard now derives **target tags from the case's artifacts** (CEF values matched against a config tag map, new `asset_context` section). Critical targets force 2-person **live**: e.g. a case artifact `dc01.corp` → `domain_controller` → `APPROVE_2PERSON`, even for an otherwise-`ALLOW` `Enrichment` playbook. Opt-in (only if `asset_context` is configured), fail-safe (no match / fetch error / no section ⇒ no tags, never relaxes the base gate). Completes epic #135.
