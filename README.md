@@ -6,7 +6,7 @@ Transform Splunk SOAR into an MCP (Model Context Protocol) server endpoint for d
 
 **Key Features:**
 - ✅ **100% On-Premises** — No cloud services, no data exfiltration
-- ✅ **Read-Only by Default** — 33 read tools active, 10 write tools opt-in via UI checkboxes (43 tools total)
+- ✅ **Read-Only by Default** — 33 read tools active, 12 write tools opt-in via UI checkboxes (45 tools total)
 - ✅ **Asset-Based Configuration** — Control all tool availability via SOAR UI checkboxes, no SSH required
 - ✅ **COA Visual Editor Stack** — Full playbook graph inspection, validation, diff, and import/export (v1.6.3+)
 - ✅ **AI Instructions Field** — Inject SOC-specific context into every AI session
@@ -26,7 +26,7 @@ Transform Splunk SOAR into an MCP (Model Context Protocol) server endpoint for d
 - **Fully on-premises** — the app itself adds no cloud dependency and performs no external data transfer
 
 ### The tool model
-- **43 tools total:** 33 read-only (enabled by default) + 10 write tools (opt-in per SOAR UI checkbox)
+- **45 tools total:** 33 read-only (enabled by default) + 12 write tools (opt-in per SOAR UI checkbox)
 - **Read:** inspect cases, artifacts, playbooks, and notes; inspect, validate, and diff the COA playbook graph
 - **Write (deliberately opt-in):** add notes, change case status/severity/owner, create artifacts, `run_playbook` (triggers real response actions), and `import_playbook`
 - Tool availability and all configuration are controlled entirely through **asset-config checkboxes** — no SSH required
@@ -587,6 +587,13 @@ tail -f /var/log/phantom/soar/phantom.log | grep soar_mcp_handler
 ---
 
 ## Changelog
+
+### v1.14.0 (2026-07-16)
+- ✨ **#159 Custom Functions — draft write (slice S2)** — two new WRITE tools (45 tools total: 33 read / 12 write, both **off by default**): `create_custom_function_draft` and `update_custom_function_draft`. They only ever write **drafts** — publishing is explicitly refused. Built on the facts the S1 probe measured, not on assumptions:
+  - **Repository allowlist** (`custom_function_write_scm_ids`, set in the **asset-config UI**): **empty by default = no write to any repository**. `scm_id` values are instance-specific — the probe found `local` = 2 while `community` (Splunk's own content) = 1, so no code default could be safe.
+  - **`is_read_only`** → refuse. **`draft_mode=false`** (publish) → refuse. **`commit_message`** required with source (API constraint). **`expected_revision`** must match the current `commit_sha` → else `REVISION_CONFLICT`, **no force update**. `name`/`scm_id` are never sent on update (immutable per API).
+  - **`dry_run=true` by default** — previews the payload (source shown as length + sha256, never echoed) and writes nothing. The #50 confirmation gate applies automatically.
+  - **No DELETE**: Splunk does not document the endpoint, so it is not built on an assumption.
 
 ### v1.13.1 (2026-07-16)
 - 🐛 **#157 Custom Function reads told the truth about what SOAR actually returned** — the S1 live probe (8.5.0.248) showed the read tools silently misreporting facts an AI agent would then build on. Fixed: (1) the list projection omits `scm_id`/`inputs`/`outputs`, so per-function counts are now **omitted rather than reported as `0`/`null`** ("not returned" ≠ "none") and the response says so (`LIST_PROJECTION_SPARSE`); (2) `warnings`/`errors` are only reported when SOAR actually returns them — this build omits them on GET, so defaulting to `[]` claimed "no warnings" (`VALIDATION_DETAIL_UNAVAILABLE`); (3) `passed_validation` is `false` for *every* function on this build (including Splunk's own), so the warning now only fires when warnings/errors corroborate it; (4) a truncated list (e.g. 50 of 157) is now disclosed with a `name=`/`scm_id=` tip.

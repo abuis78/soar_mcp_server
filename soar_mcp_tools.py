@@ -4590,6 +4590,220 @@ def tool_detect_custom_function_capabilities(
         findings=findings, fmt=fmt)
 
 
+def _cf_write_denied(config: McpServerConfig, scm_id, fmt: str) -> Optional[str]:
+    """Repository allowlist gate (#159). Returns an envelope string to abort, or None.
+
+    Fail-safe: an empty allowlist denies every write. The allowlist is an explicit
+    admin choice in the asset config — never a code default, because scm_id values
+    are instance-specific (scm_id 1 is Splunk's 'community' repo on the reference
+    instance, 'local' is 2).
+    """
+    from soar_mcp_envelope import envelope_response
+    allowed = list(getattr(config, "custom_function_write_scm_ids", []) or [])
+    if not allowed:
+        return envelope_response(
+            False,
+            "Blocked: custom function writes are not enabled for any repository.",
+            errors=[{"code": "WRITE_REPO_NOT_ALLOWED",
+                     "safe_message": "custom_function_write_scm_ids is empty. Set the allowed "
+                                     "repository ids in the asset configuration "
+                                     "(custom_function_write_scm_ids) and run Test Connectivity. "
+                                     "Resolve ids with detect_custom_function_capabilities."}],
+            fmt=fmt)
+    if scm_id not in allowed:
+        return envelope_response(
+            False, f"Blocked: repository scm_id={scm_id} is not in the write allowlist.",
+            errors=[{"code": "WRITE_REPO_NOT_ALLOWED",
+                     "safe_message": f"Allowed repository ids: {allowed}."}],
+            fmt=fmt)
+    return None
+
+
+def _cf_draft_mode_denied(args: dict, fmt: str) -> Optional[str]:
+    """Refuse any attempt to leave/disable draft mode. Publishing is out of scope."""
+    from soar_mcp_envelope import envelope_response
+    if "draft_mode" in args and not args.get("draft_mode"):
+        return envelope_response(
+            False, "Blocked: this tool only writes drafts.",
+            errors=[{"code": "PUBLISH_NOT_SUPPORTED",
+                     "safe_message": "draft_mode=false would publish the function (and delete "
+                                     "the draft copy). Publishing is not supported by this tool."}],
+            fmt=fmt)
+    return None
+
+
+def _cf_build_payload(args: dict, *, include_identity: bool) -> tuple[dict, Optional[str]]:
+    """Build the REST body. Returns (payload, error_message)."""
+    source = args.get("source")
+    commit_message = (args.get("commit_message") or "").strip()
+    if source is not None and not commit_message:
+        # API constraint: commit_message is mandatory whenever `python` is sent.
+        return {}, "commit_message is required when source is provided."
+
+    payload: dict = {"draft_mode": True}   # always a draft — never publish
+    if include_identity:
+        payload["name"] = (args.get("name") or "").strip()
+        payload["scm_id"] = args.get("scm_id")
+    if args.get("description") is not None:
+        payload["description"] = args["description"]
+    if source is not None:
+        payload["python"] = source
+        payload["commit_message"] = commit_message
+    for spec in ("inputs", "outputs"):
+        if args.get(spec) is not None:
+            payload[spec] = args[spec]
+    return payload, None
+
+
+def tool_create_custom_function_draft(
+    client: SoarApiClient, config: McpServerConfig, args: dict
+) -> str:
+    """Create a custom function as a draft (WRITE, #159)."""
+    from soar_mcp_envelope import envelope_response, normalize_output_format
+    fmt = normalize_output_format(args.get("output_format"))
+
+    name = (args.get("name") or "").strip()
+    if not name:
+        return envelope_response(False, "name is required.",
+                                 errors=[{"code": "BAD_INPUT", "safe_message": "name is required"}],
+                                 fmt=fmt)
+    scm_id, err_msg = _require_positive_int(args.get("scm_id"), "scm_id")
+    if err_msg:
+        return envelope_response(False, err_msg,
+                                 errors=[{"code": "BAD_INPUT", "safe_message": err_msg}], fmt=fmt)
+
+    blocked = _cf_draft_mode_denied(args, fmt) or _cf_write_denied(config, scm_id, fmt)
+    if blocked:
+        return blocked
+
+    payload, perr = _cf_build_payload(args, include_identity=True)
+    if perr:
+        return envelope_response(False, perr,
+                                 errors=[{"code": "BAD_INPUT", "safe_message": perr}], fmt=fmt)
+
+    if args.get("dry_run", True):
+        return envelope_response(
+            True, f"Dry run — would create draft '{name}' in scm_id={scm_id}. Nothing was written.",
+            data={"dry_run": True, "method": "POST", "endpoint": "rest/custom_function",
+                  "payload_preview": _cf_preview_payload(payload)},
+            findings=[{"severity": "info", "code": "DRY_RUN",
+                       "message": "Re-run with dry_run=false to actually create the draft."}],
+            fmt=fmt)
+
+    data, err = client.post("custom_function", payload)
+    if err:
+        return envelope_response(False, f"Could not create draft '{name}': {err}",
+                                 errors=[{"code": "CF_CREATE_FAILED", "safe_message": str(err)}],
+                                 fmt=fmt)
+    return envelope_response(
+        True, f"Draft custom function '{name}' created in scm_id={scm_id}.",
+        data={"dry_run": False, "response": _cf_redact_response(data)},
+        findings=[{"severity": "info", "code": "DRAFT_SEMANTICS_OBSERVED",
+                   "message": "Raw (redacted) response returned so draft identity/semantics can "
+                              "be verified against this build."}],
+        fmt=fmt)
+
+
+def tool_update_custom_function_draft(
+    client: SoarApiClient, config: McpServerConfig, args: dict
+) -> str:
+    """Update an existing draft custom function (WRITE, #159)."""
+    from soar_mcp_envelope import envelope_response, normalize_output_format
+    fmt = normalize_output_format(args.get("output_format"))
+
+    cf_id, err_msg = _require_positive_int(args.get("custom_function_id"), "custom_function_id")
+    if err_msg:
+        return envelope_response(False, err_msg,
+                                 errors=[{"code": "BAD_INPUT", "safe_message": err_msg}], fmt=fmt)
+    expected_revision = (args.get("expected_revision") or "").strip()
+    if not expected_revision:
+        return envelope_response(
+            False, "expected_revision is required.",
+            errors=[{"code": "BAD_INPUT",
+                     "safe_message": "Read the current revision with get_custom_function and pass "
+                                     "it as expected_revision (optimistic concurrency)."}], fmt=fmt)
+
+    blocked = _cf_draft_mode_denied(args, fmt)
+    if blocked:
+        return blocked
+
+    # Pre-check against the live object: repo, read-only, revision, draft state.
+    current, err = client.get(f"custom_function/{cf_id}")
+    if err or not isinstance(current, dict):
+        return envelope_response(
+            False, f"Could not read custom function {cf_id}: {err or 'unexpected response'}",
+            errors=[{"code": "CF_READ_FAILED", "safe_message": str(err or "unexpected response")}],
+            fmt=fmt)
+
+    blocked = _cf_write_denied(config, current.get("scm_id"), fmt)
+    if blocked:
+        return blocked
+
+    if current.get("is_read_only"):
+        return envelope_response(
+            False, f"Blocked: custom function {cf_id} is read-only.",
+            errors=[{"code": "CF_READ_ONLY",
+                     "safe_message": "SOAR reports is_read_only=true for this function."}], fmt=fmt)
+
+    actual_revision = current.get("commit_sha")
+    if actual_revision != expected_revision:
+        return envelope_response(
+            False, "Blocked: the draft changed since it was read.",
+            errors=[{"code": "REVISION_CONFLICT",
+                     "safe_message": "expected_revision does not match the current revision. "
+                                     "Re-read with get_custom_function and retry; there is no "
+                                     "force update."}], fmt=fmt)
+
+    payload, perr = _cf_build_payload(args, include_identity=False)  # name/scm_id are immutable
+    if perr:
+        return envelope_response(False, perr,
+                                 errors=[{"code": "BAD_INPUT", "safe_message": perr}], fmt=fmt)
+
+    findings: list = []
+    if not current.get("draft_mode"):
+        findings.append({
+            "severity": "warn", "code": "TARGET_WAS_NOT_A_DRAFT",
+            "message": "The target is currently not in draft mode; this write sets draft_mode=true.",
+        })
+
+    if args.get("dry_run", True):
+        return envelope_response(
+            True, f"Dry run — would update draft {cf_id}. Nothing was written.",
+            data={"dry_run": True, "method": "POST", "endpoint": f"rest/custom_function/{cf_id}",
+                  "payload_preview": _cf_preview_payload(payload)},
+            findings=findings + [{"severity": "info", "code": "DRY_RUN",
+                                  "message": "Re-run with dry_run=false to apply the update."}],
+            fmt=fmt)
+
+    data, err = client.post(f"custom_function/{cf_id}", payload)
+    if err:
+        return envelope_response(False, f"Could not update draft {cf_id}: {err}",
+                                 errors=[{"code": "CF_UPDATE_FAILED", "safe_message": str(err)}],
+                                 fmt=fmt)
+    return envelope_response(True, f"Draft custom function {cf_id} updated.",
+                             data={"dry_run": False, "response": _cf_redact_response(data)},
+                             findings=findings, fmt=fmt)
+
+
+def _cf_preview_payload(payload: dict) -> dict:
+    """Payload preview for dry runs — source is summarised, never echoed in full."""
+    preview = {k: v for k, v in payload.items() if k != "python"}
+    src = payload.get("python")
+    if isinstance(src, str):
+        preview["python"] = f"<{len(src)} chars, sha256={hashlib.sha256(src.encode()).hexdigest()}>"
+    return preview
+
+
+def _cf_redact_response(data) -> dict:
+    """Return the write response without echoing the full source back."""
+    if not isinstance(data, dict):
+        return {"raw_type": type(data).__name__}
+    out = {k: v for k, v in data.items() if k != "python"}
+    if isinstance(data.get("python"), str):
+        out["python"] = f"<{len(data['python'])} chars>"
+    return out
+
+
 TOOL_SCHEMAS["list_custom_functions"] = {
     "description": (
         "READ — List Splunk SOAR custom functions with id, name, draft_mode, "
@@ -4633,6 +4847,72 @@ TOOL_SCHEMAS["get_custom_function"] = {
             "output_format": {"type": "string", "enum": ["text", "json"], "default": "text"},
         },
         "required": ["custom_function_id"],
+    },
+}
+
+_CF_IO_SCHEMA = {
+    "type": "array",
+    "description": "Optional. inputs entries: {name, description, contains_type[], "
+                   "input_type: item|list}. outputs entries: {data_path, description, "
+                   "contains_type[]}.",
+    "items": {"type": "object"},
+}
+
+TOOL_SCHEMAS["create_custom_function_draft"] = {
+    "description": (
+        "⚠️ WRITE — Create a custom function as a DRAFT (never publishes). The target "
+        "repository must be in the asset-config allowlist (custom_function_write_scm_ids); "
+        "an empty allowlist blocks every write. dry_run=true by default: the first call "
+        "previews the payload and writes nothing. Resolve scm_id with "
+        "detect_custom_function_capabilities — ids are instance-specific."
+    ),
+    "inputSchema": {
+        "type": "object",
+        "properties": {
+            "name": {"type": "string", "description": "Function name (immutable afterwards)."},
+            "scm_id": {"type": "integer",
+                       "description": "Target repository id. Must be in the write allowlist."},
+            "source": {"type": "string", "description": "Python source for the function."},
+            "commit_message": {"type": "string",
+                               "description": "Required whenever source is provided."},
+            "description": {"type": "string"},
+            "inputs": _CF_IO_SCHEMA,
+            "outputs": _CF_IO_SCHEMA,
+            "dry_run": {"type": "boolean",
+                        "description": "Preview without writing (default: true).",
+                        "default": True},
+        },
+        "required": ["name", "scm_id"],
+    },
+}
+
+TOOL_SCHEMAS["update_custom_function_draft"] = {
+    "description": (
+        "⚠️ WRITE — Update an existing DRAFT custom function (never publishes). Requires "
+        "expected_revision from get_custom_function: if the draft changed since you read it "
+        "the write is refused with REVISION_CONFLICT (no force update). Refuses read-only "
+        "functions and repositories outside the allowlist. dry_run=true by default. "
+        "name/scm_id are immutable and are never sent."
+    ),
+    "inputSchema": {
+        "type": "object",
+        "properties": {
+            "custom_function_id": {"type": "integer"},
+            "expected_revision": {
+                "type": "string",
+                "description": "The 'revision' (commit_sha) from get_custom_function.",
+            },
+            "source": {"type": "string"},
+            "commit_message": {"type": "string",
+                               "description": "Required whenever source is provided."},
+            "description": {"type": "string"},
+            "inputs": _CF_IO_SCHEMA,
+            "outputs": _CF_IO_SCHEMA,
+            "dry_run": {"type": "boolean",
+                        "description": "Preview without writing (default: true).",
+                        "default": True},
+        },
+        "required": ["custom_function_id", "expected_revision"],
     },
 }
 
@@ -4703,6 +4983,10 @@ _TOOL_HANDLERS = {
     "list_custom_functions": tool_list_custom_functions,
     "get_custom_function": tool_get_custom_function,
     "detect_custom_function_capabilities": tool_detect_custom_function_capabilities,
+    # Custom Function draft write (#159) — NOT in READ_ONLY_TOOLS, so _WRITE_TOOLS
+    # picks them up automatically and the #50 confirmation gate applies.
+    "create_custom_function_draft": tool_create_custom_function_draft,
+    "update_custom_function_draft": tool_update_custom_function_draft,
     # Capability detection (v1.10.0+)
     "detect_soar_capabilities": tool_detect_soar_capabilities,
     # Visual playbook pre-edit audit (v1.11.0+)

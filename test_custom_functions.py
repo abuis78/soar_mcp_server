@@ -6,6 +6,8 @@ import unittest
 
 from soar_mcp_config import ALL_TOOLS, READ_ONLY_TOOLS, McpServerConfig
 from soar_mcp_tools import (
+    tool_create_custom_function_draft,
+    tool_update_custom_function_draft,
     TOOL_SCHEMAS,
     _TOOL_HANDLERS,
     tool_detect_custom_function_capabilities,
@@ -49,7 +51,10 @@ class _FakeClient:
         self._detail = detail
         self._list_err = list_err
         self._detail_err = detail_err
-        self._scm = scm if scm is not None else [{"id": 1, "name": "local"}]
+        # Real mapping on the reference instance: community=1, local=2 (#157) —
+        # do not encode the 'local == 1' assumption the source spec got wrong.
+        self._scm = scm if scm is not None else [{"id": 1, "name": "community"},
+                                                 {"id": 2, "name": "local"}]
         self._scm_err = scm_err
         self.last_params = None
 
@@ -233,7 +238,8 @@ class CapabilityProbeTest(unittest.TestCase):
         for op in ("create_draft", "update_draft", "delete_draft", "publish",
                    "runtime_test", "direct_result_read", "export"):
             self.assertEqual(caps[op], "unknown", op)
-        self.assertEqual(env["data"]["repositories"], [{"id": 1, "name": "local"}])
+        self.assertEqual(env["data"]["repositories"],
+                         [{"id": 1, "name": "community"}, {"id": 2, "name": "local"}])
 
     def test_probe_never_write_probes(self):
         calls = []
@@ -258,6 +264,151 @@ class CapabilityProbeTest(unittest.TestCase):
         self.assertFalse(env["ok"])
         self.assertEqual(env["data"]["capabilities"]["list"], "unsupported")
         self.assertIn("CF_LIST_FAILED", [f["code"] for f in env["findings"]])
+
+
+class _WriteClient(_FakeClient):
+    """Records writes so tests can prove a blocked path never wrote."""
+    def __init__(self, detail=None, **kw):
+        super().__init__(detail=detail, **kw)
+        self.posts = []
+
+    def post(self, path, body):
+        self.posts.append((path, body))
+        return {"id": 99, "name": "new_fn", "draft_mode": True, "commit_sha": "abc"}, None
+
+
+def _wcfg(allow=(2,)):
+    c = McpServerConfig()
+    c.custom_function_write_scm_ids = list(allow)
+    return c
+
+
+class DraftWriteRegistrationTest(unittest.TestCase):
+    def test_write_tools_are_write_not_read_only(self):
+        from soar_mcp_tools import _WRITE_TOOLS
+        for t in ("create_custom_function_draft", "update_custom_function_draft"):
+            self.assertIn(t, ALL_TOOLS, t)
+            self.assertNotIn(t, READ_ONLY_TOOLS, t)
+            self.assertIn(t, _WRITE_TOOLS, t)      # -> #50 confirmation gate applies
+            self.assertIn(t, TOOL_SCHEMAS, t)
+            self.assertIn(t, _TOOL_HANDLERS, t)
+
+
+class CreateDraftGateTest(unittest.TestCase):
+    def _create(self, cfg, **over):
+        args = {"name": "fn", "scm_id": 2, "source": "def fn(): pass",
+                "commit_message": "msg", "dry_run": False, "output_format": "json"}
+        args.update(over)
+        c = _WriteClient()
+        return c, _json(tool_create_custom_function_draft(c, cfg, args))
+
+    def test_empty_allowlist_blocks_every_write(self):
+        c, env = self._create(_wcfg(allow=()))
+        self.assertFalse(env["ok"])
+        self.assertEqual(env["errors"][0]["code"], "WRITE_REPO_NOT_ALLOWED")
+        self.assertEqual(c.posts, [])           # nothing written
+
+    def test_repo_outside_allowlist_blocks(self):
+        c, env = self._create(_wcfg(allow=(2,)), scm_id=1)   # 1 = community
+        self.assertFalse(env["ok"])
+        self.assertEqual(env["errors"][0]["code"], "WRITE_REPO_NOT_ALLOWED")
+        self.assertEqual(c.posts, [])
+
+    def test_publish_attempt_blocked(self):
+        c, env = self._create(_wcfg(), draft_mode=False)
+        self.assertFalse(env["ok"])
+        self.assertEqual(env["errors"][0]["code"], "PUBLISH_NOT_SUPPORTED")
+        self.assertEqual(c.posts, [])
+
+    def test_source_without_commit_message_blocked(self):
+        c, env = self._create(_wcfg(), commit_message="")
+        self.assertFalse(env["ok"])
+        self.assertEqual(env["errors"][0]["code"], "BAD_INPUT")
+        self.assertEqual(c.posts, [])
+
+    def test_dry_run_is_default_and_writes_nothing(self):
+        c = _WriteClient()
+        env = _json(tool_create_custom_function_draft(
+            c, _wcfg(), {"name": "fn", "scm_id": 2, "source": "def fn(): pass",
+                         "commit_message": "m", "output_format": "json"}))
+        self.assertTrue(env["ok"])
+        self.assertTrue(env["data"]["dry_run"])
+        self.assertEqual(c.posts, [])
+        # preview never echoes the full source back
+        self.assertIn("sha256=", env["data"]["payload_preview"]["python"])
+
+    def test_real_create_forces_draft_mode(self):
+        c, env = self._create(_wcfg())
+        self.assertTrue(env["ok"])
+        path, body = c.posts[0]
+        self.assertEqual(path, "custom_function")
+        self.assertIs(body["draft_mode"], True)          # always a draft
+        self.assertEqual(body["scm_id"], 2)
+        self.assertEqual(body["commit_message"], "msg")
+
+
+class UpdateDraftGateTest(unittest.TestCase):
+    def _update(self, cfg, detail=None, **over):
+        args = {"custom_function_id": 1, "expected_revision": "7e08d23",
+                "source": "def fn(): pass", "commit_message": "m",
+                "dry_run": False, "output_format": "json"}
+        args.update(over)
+        d = detail if detail is not None else _cf(draft=True)
+        c = _WriteClient(detail=d)
+        return c, _json(tool_update_custom_function_draft(c, cfg, args))
+
+    def test_revision_conflict_blocks_without_force(self):
+        c, env = self._update(_wcfg(), expected_revision="stale")
+        self.assertFalse(env["ok"])
+        self.assertEqual(env["errors"][0]["code"], "REVISION_CONFLICT")
+        self.assertEqual(c.posts, [])
+
+    def test_read_only_function_blocks(self):
+        d = _cf(draft=True)
+        d["is_read_only"] = True
+        c, env = self._update(_wcfg(), detail=d)
+        self.assertFalse(env["ok"])
+        self.assertEqual(env["errors"][0]["code"], "CF_READ_ONLY")
+        self.assertEqual(c.posts, [])
+
+    def test_repo_outside_allowlist_blocks(self):
+        d = _cf(draft=True)
+        d["scm_id"] = 1                      # community
+        c, env = self._update(_wcfg(allow=(2,)), detail=d)
+        self.assertFalse(env["ok"])
+        self.assertEqual(env["errors"][0]["code"], "WRITE_REPO_NOT_ALLOWED")
+        self.assertEqual(c.posts, [])
+
+    def test_missing_expected_revision_blocks(self):
+        c, env = self._update(_wcfg(), expected_revision="")
+        self.assertFalse(env["ok"])
+        self.assertEqual(env["errors"][0]["code"], "BAD_INPUT")
+        self.assertEqual(c.posts, [])
+
+    def test_update_never_sends_immutable_identity(self):
+        c, env = self._update(_wcfg())
+        self.assertTrue(env["ok"])
+        path, body = c.posts[0]
+        self.assertEqual(path, "custom_function/1")
+        self.assertNotIn("name", body)       # immutable per API
+        self.assertNotIn("scm_id", body)
+        self.assertIs(body["draft_mode"], True)
+
+    def test_non_draft_target_warns(self):
+        c, env = self._update(_wcfg(), detail=_cf(draft=False))
+        self.assertTrue(env["ok"])
+        self.assertIn("TARGET_WAS_NOT_A_DRAFT", [f["code"] for f in env["findings"]])
+
+
+class ScmIdAllowlistParseTest(unittest.TestCase):
+    def test_parse_is_fail_safe(self):
+        from soar_mcp_config import McpConfigLoader
+        p = McpConfigLoader._parse_scm_ids
+        self.assertEqual(p("2"), [2])
+        self.assertEqual(p(" 2 , 4 ,2"), [2, 4])        # trimmed + deduped
+        self.assertEqual(p(""), [])                      # empty -> no writes
+        self.assertEqual(p(None), [])
+        self.assertEqual(p("2,abc,-1,0"), [2])           # junk never widens the allowlist
 
 
 if __name__ == "__main__":
