@@ -114,6 +114,10 @@ ALL_TOOLS: list[str] = [
     "list_custom_functions",
     "get_custom_function",
     "detect_custom_function_capabilities",
+    # Custom Function draft write (v1.14.0+, #159) — deliberately NOT in
+    # READ_ONLY_TOOLS: that is what makes them write tools (confirmation gate).
+    "create_custom_function_draft",
+    "update_custom_function_draft",
 ]
 
 READ_ONLY_TOOLS: frozenset[str] = frozenset(
@@ -206,6 +210,13 @@ class McpServerConfig:
     # every run_playbook is evaluated by the policy guard (ALLOW / APPROVE_1CLICK /
     # APPROVE_2PERSON / DENY) before dispatch. Default off = backwards-compatible.
     policy_enabled: bool = False
+
+    # Custom Function draft-write allowlist (#159). Repository (scm_id) values that
+    # create/update_custom_function_draft may write to. EMPTY = no write allowed at
+    # all — fail-safe by design: the S1 probe showed 'local' is scm_id 2 while
+    # 'community' (Splunk's own, read-only content) is 1, so a wrong default would
+    # silently target the wrong repository. Admins opt in per asset config.
+    custom_function_write_scm_ids: list[int] = field(default_factory=list)
 
     # AI instructions — sent to the LLM in every MCP initialize response
     ai_instructions: str = ""
@@ -395,6 +406,8 @@ class McpConfigLoader:
         config.enable_test_harness = self._get_bool(parser, "safety", "enable_test_harness", False)
         config.require_confirmation = self._get_bool(parser, "safety", "require_confirmation", False)
         config.policy_enabled = self._get_bool(parser, "policy", "enabled", False)
+        config.custom_function_write_scm_ids = self._parse_scm_ids(
+            parser.get("custom_functions", "allowed_write_scm_ids", fallback=""))
         config.test_container_label = (
             parser.get("safety", "test_container_label", fallback="test").strip() or "test")
         config.test_container_name_prefix = (
@@ -484,6 +497,12 @@ class McpConfigLoader:
         if pol is not None:
             config.policy_enabled = bool(pol)
 
+        # Custom Function write allowlist (#159). None = not set in the asset config
+        # -> keep the mcp.conf value. The UI field is the intended way to grant this.
+        cf_ids = overrides.get("custom_function_write_scm_ids")
+        if cf_ids is not None:
+            config.custom_function_write_scm_ids = self._parse_scm_ids(cf_ids)
+
         ssl_override = overrides.get("ssl_verify")
         if ssl_override is not None:
             if isinstance(ssl_override, bool):
@@ -499,6 +518,25 @@ class McpConfigLoader:
         return config
 
     # ── Helpers ────────────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _parse_scm_ids(raw: object) -> list[int]:
+        """Parse a comma-separated scm_id allowlist. Anything unparsable is dropped
+        (fail-safe: a malformed entry must never widen the allowlist)."""
+        ids: list[int] = []
+        for part in str(raw or "").split(","):
+            part = part.strip()
+            if not part:
+                continue
+            try:
+                value = int(part)
+            except (TypeError, ValueError):
+                logger.warning("[MCP Config] Ignoring non-numeric scm_id in "
+                               "allowed_write_scm_ids: %r", part)
+                continue
+            if value > 0 and value not in ids:
+                ids.append(value)
+        return ids
 
     @staticmethod
     def _get_bool(parser: configparser.ConfigParser, section: str, key: str, default: bool) -> bool:

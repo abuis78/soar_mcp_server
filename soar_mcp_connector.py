@@ -164,6 +164,11 @@ class SoarMcpConnector(BaseConnector):
         pol_val = asset_cfg.get("policy_enabled")
         policy_enabled = bool(pol_val) if pol_val is not None else None
 
+        # Custom Function draft-write allowlist (#159). Empty string is meaningful
+        # ("explicitly no repositories"), so only None falls back to mcp.conf.
+        cf_ids_val = asset_cfg.get("custom_function_write_scm_ids")
+        cf_write_scm_ids = str(cf_ids_val).strip() if cf_ids_val is not None else None
+
         ssl_val = asset_cfg.get("ssl_verify")
         ssl_verify = bool(ssl_val) if ssl_val is not None else None
 
@@ -183,6 +188,7 @@ class SoarMcpConnector(BaseConnector):
             "ai_instructions": ai_instructions,
             "enable_test_harness": enable_test_harness,
             "policy_enabled": policy_enabled,
+            "custom_function_write_scm_ids": cf_write_scm_ids,
             "ssl_verify": ssl_verify,
             "asset_name": self._asset_name,
             "base_url": self._base_url,

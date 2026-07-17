@@ -8,8 +8,8 @@
     "product_version_regex": ".*",
     "publisher": "Andreas Buis",
     "license": "Copyright 2026 Andreas Buis",
-    "app_version": "1.13.1",
-    "utctime_updated": "2026-07-16T21:00:00.000000Z",
+    "app_version": "1.14.0",
+    "utctime_updated": "2026-07-16T22:00:00.000000Z",
     "package_name": "phantom_soar_mcp_server",
     "main_module": "soar_mcp_connector.py",
     "min_phantom_version": "8.5.0",
@@ -215,6 +215,26 @@
             "default": true,
             "required": false,
             "order": 87
+        },
+        "tool_create_custom_function_draft": {
+            "description": "WRITE ⚠️ — create_custom_function_draft: Create a custom function as a DRAFT. Requires the target repository to be listed in custom_function_write_scm_ids. dry_run=true by default. Never publishes.",
+            "data_type": "boolean",
+            "default": false,
+            "required": false,
+            "order": 92
+        },
+        "tool_update_custom_function_draft": {
+            "description": "WRITE ⚠️ — update_custom_function_draft: Update an existing DRAFT custom function. Requires expected_revision (optimistic concurrency) and the repository allowlist. dry_run=true by default. Never publishes.",
+            "data_type": "boolean",
+            "default": false,
+            "required": false,
+            "order": 93
+        },
+        "custom_function_write_scm_ids": {
+            "description": "Custom Function write allowlist (issue #159) — comma-separated repository (scm_id) values that the draft-write tools may write to. EMPTY = no writes at all (fail-safe default). Resolve ids with detect_custom_function_capabilities; they are NOT stable across instances (on the reference instance 'local' is 2 and 'community' is 1). Never grant a community or production repository. Example: 2",
+            "data_type": "string",
+            "required": false,
+            "order": 94
         },
         "policy_enabled": {
             "description": "Policy layer (gated-autonomous run_playbook, issue #135). When enabled, every run_playbook is evaluated by an unbypassable SOC guard before dispatch (ALLOW / APPROVE_1CLICK / APPROVE_2PERSON / DENY): category sets the base gate, risk can only escalate, unknown category is held (never auto-run). 1-click/2-person runs collect distinct human approval(s) via scoped MCP tokens before executing. Category -> gate mapping is data-driven (policy/policy_config.json). Default off (backwards-compatible).",
