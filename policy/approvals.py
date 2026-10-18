@@ -7,13 +7,16 @@ fcntl-locked around the read-modify-write, TTL-bound, single-use on completion.
 
 Identity is the scoped-token soar_user_id (D3). Two-person separation is
 enforced here: the same approver id cannot count twice, so two *different*
-humans (two different scoped tokens) are required — no self-approval.
+humans (two different scoped tokens) are required — no self-approval. The
+initiator of the held action is recorded at issue() and can never approve it,
+not even a 1-click (issue #161, PM-F21 / AN-08).
 
 Fail-safe: a missing/expired/mismatched token yields INVALID; nothing executes
 without the full set of distinct approvers. Only a SHA-256 hash of the token is
 ever stored, never the raw token.
 
-An entry is a 5-list: [tool, args_hash, expiry, needed, [approver_ids...]].
+An entry is a 6-list: [tool, args_hash, expiry, needed, [approver_ids...], initiator].
+Entries in the old 5-list format are treated as invalid (fail-safe).
 """
 from __future__ import annotations
 
@@ -32,7 +35,8 @@ _TTL_DEFAULT = 600.0  # 10 min — two humans need longer to coordinate than a c
 
 @dataclass(frozen=True)
 class ApprovalResult:
-    """Outcome of submit(). status is one of: approved | pending | duplicate | invalid."""
+    """Outcome of submit(). status is one of:
+    approved | pending | duplicate | self_approval | invalid."""
     status: str
     have: int = 0
     need: int = 0
@@ -91,7 +95,7 @@ class ApprovalStore:
     def _prune(data: dict) -> dict:
         now = time.time()
         return {k: v for k, v in data.items()
-                if isinstance(v, list) and len(v) == 5 and v[2] > now}
+                if isinstance(v, list) and len(v) == 6 and v[2] > now}
 
     @contextlib.contextmanager
     def _file_lock(self):
@@ -122,14 +126,20 @@ class ApprovalStore:
 
     # --- API -----------------------------------------------------------------
 
-    def issue(self, tool: str, args: dict, needed: int, ttl: float = _TTL_DEFAULT) -> str:
-        """Open an approval request; return the token the approver(s) must present."""
+    def issue(self, tool: str, args: dict, needed: int, ttl: float = _TTL_DEFAULT,
+              initiator: Optional[str] = None) -> str:
+        """Open an approval request; return the token the approver(s) must present.
+
+        initiator is the identity that requested the held action; it is excluded
+        from approving it (issue #161).
+        """
         needed = max(1, int(needed))
         token = "approve_" + secrets.token_urlsafe(9)
         with self._lock, self._file_lock():
             data = self._prune(self._load())
             data[self._token_hash(token)] = [
-                tool, self._args_hash(tool, args), time.time() + ttl, needed, []
+                tool, self._args_hash(tool, args), time.time() + ttl, needed, [],
+                (initiator or "").strip(),
             ]
             self._save(data)
         return token
@@ -140,6 +150,7 @@ class ApprovalStore:
         - approved : the needed number of *distinct* approvers is met (token consumed)
         - pending  : recorded, more distinct approver(s) still required
         - duplicate: approver_id already approved this token (not counted again)
+        - self_approval: approver_id is the initiator of the action (not counted)
         - invalid  : no/expired/mismatched token, or empty approver_id
         """
         approver = (approver_id or "").strip()
@@ -150,7 +161,7 @@ class ApprovalStore:
         with self._lock, self._file_lock():
             data = self._load()
             entry = data.get(th)
-            if entry is None or not isinstance(entry, list) or len(entry) != 5 or entry[2] <= now:
+            if entry is None or not isinstance(entry, list) or len(entry) != 6 or entry[2] <= now:
                 if entry is not None:
                     data.pop(th, None)     # expired/garbage cleanup
                     self._save(data)
@@ -161,6 +172,8 @@ class ApprovalStore:
 
             needed = int(entry[3])
             approvers = list(entry[4]) if isinstance(entry[4], list) else []
+            if entry[5] and approver == entry[5]:
+                return ApprovalResult("self_approval", have=len(approvers), need=needed)
             if approver in approvers:
                 return ApprovalResult("duplicate", have=len(approvers), need=needed)
 
