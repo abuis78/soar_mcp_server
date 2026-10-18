@@ -107,18 +107,18 @@ class PolicyApprovalFlowTest(unittest.TestCase):
         c = _FakeClient("Containment")
         tok = self._issue_token(c, "alice")
         a = dict(self.args, approval_token=tok)
-        out1 = call_tool("run_playbook", a, c, _cfg(policy=True), actor_id="alice")
+        out1 = call_tool("run_playbook", a, c, _cfg(policy=True), actor_id="bob")
         self.assertIn("1/2", out1)
         self.assertFalse(c.ran)
-        out2 = call_tool("run_playbook", a, c, _cfg(policy=True), actor_id="bob")
+        out2 = call_tool("run_playbook", a, c, _cfg(policy=True), actor_id="carol")
         self.assertTrue(c.ran)  # two distinct approvers -> executes
 
     def test_two_person_self_approval_blocked(self):
         c = _FakeClient("Containment")
         tok = self._issue_token(c, "alice")
         a = dict(self.args, approval_token=tok)
-        call_tool("run_playbook", a, c, _cfg(policy=True), actor_id="alice")
-        out = call_tool("run_playbook", a, c, _cfg(policy=True), actor_id="alice")
+        call_tool("run_playbook", a, c, _cfg(policy=True), actor_id="bob")
+        out = call_tool("run_playbook", a, c, _cfg(policy=True), actor_id="bob")
         self.assertIn("already approved", out)
         self.assertFalse(c.ran)
 
@@ -126,8 +126,38 @@ class PolicyApprovalFlowTest(unittest.TestCase):
         c = _FakeClient("Message Eviction")
         tok = self._issue_token(c, "alice")
         a = dict(self.args, approval_token=tok)
-        call_tool("run_playbook", a, c, _cfg(policy=True), actor_id="alice")
+        call_tool("run_playbook", a, c, _cfg(policy=True), actor_id="bob")
         self.assertTrue(c.ran)
+
+    # --- initiator exclusion (issue #161, PM-F21 / AN-08 / AC-03) ------------
+
+    def test_one_click_initiator_cannot_approve(self):
+        c = _FakeClient("Message Eviction")
+        tok = self._issue_token(c, "alice")
+        a = dict(self.args, approval_token=tok)
+        out = call_tool("run_playbook", a, c, _cfg(policy=True), actor_id="alice")
+        self.assertIn("cannot approve it yourself", out)
+        self.assertFalse(c.ran)
+        call_tool("run_playbook", a, c, _cfg(policy=True), actor_id="bob")
+        self.assertTrue(c.ran)
+
+    def test_two_person_initiator_not_counted(self):
+        c = _FakeClient("Containment")
+        tok = self._issue_token(c, "alice")
+        a = dict(self.args, approval_token=tok)
+        out = call_tool("run_playbook", a, c, _cfg(policy=True), actor_id="alice")
+        self.assertIn("cannot approve it yourself", out)
+        out1 = call_tool("run_playbook", a, c, _cfg(policy=True), actor_id="bob")
+        self.assertIn("1/2", out1)
+        self.assertFalse(c.ran)
+        call_tool("run_playbook", a, c, _cfg(policy=True), actor_id="carol")
+        self.assertTrue(c.ran)
+
+    def test_issue_message_names_initiator_exclusion(self):
+        c = _FakeClient("Message Eviction")
+        out = call_tool("run_playbook", dict(self.args), c, _cfg(policy=True), actor_id="alice")
+        self.assertIn("The requester (alice) cannot approve this action.", out)
+        self.assertFalse(c.ran)
 
     def test_invalid_token_does_not_execute(self):
         c = _FakeClient("Containment")
