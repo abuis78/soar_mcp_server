@@ -243,6 +243,12 @@
             "required": false,
             "order": 42
         },
+        "agent_read_exceptions": {
+            "description": "Agent read exceptions (SPEC-MCP MCP-L02). MCP tokens minted with principal_type 'agent' get NO direct read tools — agents read SOAR data only through Tool Broker templates. This comma-separated list names read-only tools an agent token may still call directly; every entry must be deliberately justified (document the reason in your change record). EMPTY = no exceptions (fail-safe default). Only read-only tool names are accepted; anything else is ignored. Example: get_soar_info",
+            "data_type": "string",
+            "required": false,
+            "order": 43
+        },
         "tool_list_apps": {
             "description": "READ \u2014 list_apps: List installed SOAR apps/connectors (name, vendor, supported actions). Used by the playbook-builder skill for connector discovery.",
             "data_type": "boolean",

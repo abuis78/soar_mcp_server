@@ -218,6 +218,13 @@ class McpServerConfig:
     # silently target the wrong repository. Admins opt in per asset config.
     custom_function_write_scm_ids: list[int] = field(default_factory=list)
 
+    # Agent read exceptions (SPEC-MCP, MCP-L02). Tokens with principal_type
+    # "agent" get NO direct read tools (they must read via the Tool Broker).
+    # This explicit, admin-justified list names read tools an agent token may
+    # still call directly. Default EMPTY = no exceptions. Only names from
+    # READ_ONLY_TOOLS are accepted; anything else is dropped (fail-safe).
+    agent_read_exceptions: list[str] = field(default_factory=list)
+
     # AI instructions — sent to the LLM in every MCP initialize response
     ai_instructions: str = ""
 
@@ -253,6 +260,7 @@ class McpServerConfig:
             "max_results": self.max_results,
             "max_items_per_case": self.max_items_per_case,
             "write_tools_enabled": self.write_tools_enabled,
+            "agent_read_exceptions": sorted(self.agent_read_exceptions),
             "advisory_disclaimer": self.advisory_disclaimer,
             "log_tool_calls": self.log_tool_calls,
             "protocol_version": self.protocol_version,
@@ -408,6 +416,8 @@ class McpConfigLoader:
         config.policy_enabled = self._get_bool(parser, "policy", "enabled", False)
         config.custom_function_write_scm_ids = self._parse_scm_ids(
             parser.get("custom_functions", "allowed_write_scm_ids", fallback=""))
+        config.agent_read_exceptions = self._parse_agent_read_exceptions(
+            parser.get("policy", "agent_read_exceptions", fallback=""))
         config.test_container_label = (
             parser.get("safety", "test_container_label", fallback="test").strip() or "test")
         config.test_container_name_prefix = (
@@ -503,6 +513,12 @@ class McpConfigLoader:
         if cf_ids is not None:
             config.custom_function_write_scm_ids = self._parse_scm_ids(cf_ids)
 
+        # Agent read exceptions (MCP-L02). None = not set in the asset config ->
+        # keep the mcp.conf value. Empty string = explicitly no exceptions.
+        are = overrides.get("agent_read_exceptions")
+        if are is not None:
+            config.agent_read_exceptions = self._parse_agent_read_exceptions(are)
+
         ssl_override = overrides.get("ssl_verify")
         if ssl_override is not None:
             if isinstance(ssl_override, bool):
@@ -518,6 +534,31 @@ class McpConfigLoader:
         return config
 
     # ── Helpers ────────────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _parse_agent_read_exceptions(raw: object) -> list[str]:
+        """Parse the comma-separated agent read-exception list (MCP-L02).
+
+        Fail-safe: only names in READ_ONLY_TOOLS are kept. Unknown names and
+        write tools are dropped with a warning — a typo must never widen what
+        an agent token may call.
+        """
+        if isinstance(raw, (list, tuple, set)):
+            parts = [str(x) for x in raw]
+        else:
+            parts = str(raw or "").split(",")
+        out: list[str] = []
+        for part in parts:
+            name = part.strip()
+            if not name:
+                continue
+            if name not in READ_ONLY_TOOLS:
+                logger.warning("[MCP Config] Ignoring agent_read_exceptions entry %r: "
+                               "not a read-only tool", name)
+                continue
+            if name not in out:
+                out.append(name)
+        return out
 
     @staticmethod
     def _parse_scm_ids(raw: object) -> list[int]:
