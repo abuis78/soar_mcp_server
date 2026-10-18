@@ -1,8 +1,10 @@
 """Unit tests for the policy approval store (issue #138, Phase 3). No SOAR."""
 from __future__ import annotations
 
+import json
 import os
 import tempfile
+import time
 import unittest
 
 from policy.approvals import ApprovalStore
@@ -55,6 +57,39 @@ class ApprovalStoreTest(unittest.TestCase):
         tok = self.store.issue(self.tool, self.args, needed=1)
         self.assertEqual(self.store.submit(tok, self.tool, self.args, "").status, "invalid")
         self.assertEqual(self.store.submit(tok, self.tool, self.args, "   ").status, "invalid")
+
+    # --- initiator exclusion (issue #161, PM-F21 / AN-08) --------------------
+
+    def test_one_click_initiator_cannot_approve(self):
+        tok = self.store.issue(self.tool, self.args, needed=1, initiator="alice")
+        res = self.store.submit(tok, self.tool, self.args, "alice")
+        self.assertEqual(res.status, "self_approval")
+        self.assertEqual((res.have, res.need), (0, 1))
+        # the rejected attempt did not consume the token
+        self.assertTrue(self.store.submit(tok, self.tool, self.args, "bob").approved)
+
+    def test_two_person_initiator_not_counted(self):
+        tok = self.store.issue(self.tool, self.args, needed=2, initiator="alice")
+        self.assertEqual(self.store.submit(tok, self.tool, self.args, "alice").status,
+                         "self_approval")
+        first = self.store.submit(tok, self.tool, self.args, "bob")
+        self.assertEqual((first.status, first.have, first.need), ("pending", 1, 2))
+        self.assertTrue(self.store.submit(tok, self.tool, self.args, "carol").approved)
+
+    def test_initiator_match_ignores_whitespace(self):
+        tok = self.store.issue(self.tool, self.args, needed=1, initiator=" alice ")
+        self.assertEqual(self.store.submit(tok, self.tool, self.args, "alice").status,
+                         "self_approval")
+
+    def test_legacy_5_list_entry_is_invalid(self):
+        # pre-#161 entry without initiator -> fail-safe invalid, never approved
+        tok = "approve_legacy"
+        legacy = {ApprovalStore._token_hash(tok): [
+            self.tool, ApprovalStore._args_hash(self.tool, self.args),
+            time.time() + 600, 1, []]}
+        with open(self.path, "w", encoding="utf-8") as fh:
+            json.dump(legacy, fh)
+        self.assertEqual(self.store.submit(tok, self.tool, self.args, "bob").status, "invalid")
 
     # --- token binding / fail-safe ------------------------------------------
 
