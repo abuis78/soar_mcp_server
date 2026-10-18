@@ -30,7 +30,7 @@ _app_dir = os.path.dirname(os.path.abspath(__file__))
 if _app_dir not in sys.path:
     sys.path.insert(0, _app_dir)
 
-from soar_mcp_config import McpServerConfig, get_config
+from soar_mcp_config import READ_ONLY_TOOLS, McpServerConfig, get_config
 from soar_mcp_tools import TOOL_SCHEMAS, SoarApiClient, call_tool
 from soar_mcp_utils import redact_nested
 
@@ -315,6 +315,25 @@ class SoarMcpRestHandler(dict):
     # still honoured by _handle_tools_call for anyone who already knows the name.
     _HIDDEN_FROM_LIST = frozenset({"save_playbook_layout_only"})
 
+    @staticmethod
+    def _agent_read_blocked(tool_name: str, config: McpServerConfig,
+                            token_verification=None) -> bool:
+        """SPEC-MCP MCP-L01/L02: an 'agent' principal gets no direct read tools.
+
+        True when the caller is an agent-principal scoped token AND tool_name is
+        a read-only tool that is not on the admin-justified exception list
+        (config.agent_read_exceptions). Single source of truth for tools/list
+        (hide) and tools/call (reject) so the two can never disagree. Humans,
+        brokers and the legacy full-token path are never blocked here.
+        """
+        if token_verification is None:
+            return False
+        if getattr(token_verification, "principal_type", "mensch") != "agent":
+            return False
+        if tool_name not in READ_ONLY_TOOLS:
+            return False
+        return tool_name not in set(getattr(config, "agent_read_exceptions", []) or [])
+
     def _handle_tools_list(self, config: McpServerConfig,
                            token_verification=None) -> dict:
         # Scoped token allow-list intersects with asset-config enabled tools.
@@ -327,6 +346,7 @@ class SoarMcpRestHandler(dict):
              "inputSchema": schema["inputSchema"]}
             for name, schema in TOOL_SCHEMAS.items()
             if name in allowed and name not in self._HIDDEN_FROM_LIST
+            and not self._agent_read_blocked(name, config, token_verification)
         ]
         logger.info("[SOAR MCP] tools/list → %d tools", len(tools))
         return {"tools": tools}
