@@ -384,7 +384,24 @@ class SoarMcpRestHandler(dict):
                                   outcome="denied:scoped")
             return {"content": [{"type": "text", "text": text}], "isError": True}
 
-        self._audit_tool_call(token_verification, tool_name, arguments, outcome="ok")
+        # SPEC-MCP MCP-L01/L02: agent-principal tokens get no direct read tools.
+        # Same predicate as tools/list, so hidden == rejected. An admin-listed
+        # exception (agent_read_exceptions) proceeds but is marked in the audit.
+        outcome = "ok"
+        if self._agent_read_blocked(tool_name, config, token_verification):
+            agent_id = getattr(token_verification, "agent_id", None) or "-"
+            text = (f"\u26d4 USE_TOOL_BROKER \u2014 Tool '{tool_name}' is a direct SOAR read tool "
+                    f"and is not available to agent tokens. Read SOAR data through the "
+                    f"Tool Broker template for this need (agent_id={agent_id}).")
+            self._audit_tool_call(token_verification, tool_name, arguments,
+                                  outcome="denied:use_tool_broker")
+            return {"content": [{"type": "text", "text": text}], "isError": True}
+        if (token_verification is not None
+                and getattr(token_verification, "principal_type", "mensch") == "agent"
+                and tool_name in READ_ONLY_TOOLS):
+            outcome = "ok:agent_read_exception"
+
+        self._audit_tool_call(token_verification, tool_name, arguments, outcome=outcome)
         # Scoped-token identity is the accountable approver for the policy layer
         # (#138); legacy full tokens have no bound user -> None (fail-safe HOLD).
         actor_id = token_verification.soar_user_id if token_verification is not None else None

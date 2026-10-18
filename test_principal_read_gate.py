@@ -5,6 +5,7 @@ Phase 1.4 covers tools/list visibility; 1.5 adds the tools/call rejection.
 from __future__ import annotations
 
 import unittest
+from unittest.mock import patch
 
 from soar_mcp_config import ALL_TOOLS, READ_ONLY_TOOLS, McpServerConfig
 from soar_mcp_handler import SoarMcpRestHandler
@@ -79,6 +80,67 @@ class AgentReadGateListTest(unittest.TestCase):
         self.assertFalse(h("get_case", cfg, _tv("mensch")))
         self.assertFalse(h("get_case", cfg, _tv("broker")))
         self.assertFalse(h("get_case", cfg, None))
+
+
+class _FakeClient:
+    pass
+
+
+def _call(cfg, tv, tool, arguments=None):
+    """Run _handle_tools_call with call_tool mocked; return (result, call_tool_mock)."""
+    with patch("soar_mcp_handler.call_tool", return_value="fine") as ct:
+        result = _handler()._handle_tools_call(
+            {"name": tool, "arguments": arguments or {}}, _FakeClient(), cfg, tv)
+    return result, ct
+
+
+class AgentReadGateCallTest(unittest.TestCase):
+    def test_agent_rejected_on_every_read_tool_and_handler_not_called(self):
+        cfg = _cfg()
+        for tool in sorted(READ_ONLY_TOOLS):
+            with self.subTest(tool=tool):
+                result, ct = _call(cfg, _tv("agent", "a1"), tool)
+                self.assertTrue(result["isError"])
+                self.assertIn("USE_TOOL_BROKER", result["content"][0]["text"])
+                self.assertIn("agent_id=a1", result["content"][0]["text"])
+                ct.assert_not_called()
+
+    def test_agent_rejection_is_audited(self):
+        with self.assertLogs("soar_mcp.audit", level="INFO") as cm:
+            _call(_cfg(), _tv("agent", "a1"), "get_case", {"case_id": 1})
+        self.assertTrue(any("outcome=denied:use_tool_broker" in line for line in cm.output))
+
+    def test_agent_exception_runs_and_is_marked_in_audit(self):
+        with self.assertLogs("soar_mcp.audit", level="INFO") as cm:
+            result, ct = _call(_cfg(["get_soar_info"]), _tv("agent", "a1"), "get_soar_info")
+        self.assertFalse(result["isError"])
+        ct.assert_called_once()
+        self.assertTrue(any("outcome=ok:agent_read_exception" in line for line in cm.output))
+
+    def test_agent_write_tool_proceeds_with_plain_ok(self):
+        with self.assertLogs("soar_mcp.audit", level="INFO") as cm:
+            result, ct = _call(_cfg(), _tv("agent", "a1"), "add_case_note",
+                               {"case_id": 1, "content": "x"})
+        self.assertFalse(result["isError"])
+        ct.assert_called_once()
+        self.assertTrue(any("outcome=ok " in line for line in cm.output))
+
+    def test_human_broker_legacy_read_unchanged(self):
+        for tv in (_tv("mensch"), _tv("broker"), None):
+            with self.subTest(principal=getattr(tv, "principal_type", "legacy")):
+                result, ct = _call(_cfg(), tv, "get_case", {"case_id": 1})
+                self.assertFalse(result["isError"])
+                ct.assert_called_once()
+
+    def test_disabled_and_scoped_checks_still_win(self):
+        cfg = _cfg()
+        cfg.enabled_tools = {"add_case_note"}             # get_case disabled
+        result, ct = _call(cfg, _tv("agent", "a1"), "get_case")
+        self.assertIn("is disabled", result["content"][0]["text"])
+        ct.assert_not_called()
+        result, ct = _call(_cfg(), _tv("agent", "a1", allowed_tools=["add_case_note"]), "get_case")
+        self.assertIn("allow-list", result["content"][0]["text"])
+        ct.assert_not_called()
 
 
 if __name__ == "__main__":
