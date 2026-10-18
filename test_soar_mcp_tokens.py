@@ -5,13 +5,15 @@ Run from inside the phantom_soar_mcp_server/ directory:
 """
 from __future__ import annotations
 
+import json
 import os
 import tempfile
 import time
 import unittest
 from pathlib import Path
 
-from soar_mcp_tokens import TokenStore, sanitise_args_for_audit
+from soar_mcp_tokens import (PRINCIPAL_HUMAN, TokenStore, normalise_principal,
+                             sanitise_args_for_audit)
 from soar_mcp_config import McpServerConfig, ALL_TOOLS, READ_ONLY_TOOLS
 
 
@@ -99,6 +101,95 @@ class TokenStoreTest(unittest.TestCase):
         self.store.mint(label="perm", soar_user_id="p", soar_call_token="t")
         mode = os.stat(self.store_path).st_mode & 0o777
         self.assertEqual(mode, 0o600)
+
+
+class PrincipalTypeTest(unittest.TestCase):
+    """SPEC-MCP MCP-G01: every scoped token carries a principal_type."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.store_path = Path(self._tmp.name) / "mcp_tokens.json"
+        TokenStore._instances.clear()
+        self.store = TokenStore.for_path(self.store_path)
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _mint(self, **kw):
+        base = dict(label="t", soar_user_id="u", soar_call_token="ph_u", lifetime_days=1)
+        base.update(kw)
+        return self.store.mint(**base)
+
+    def test_default_is_mensch(self):
+        m = self._mint()
+        self.assertEqual(m.principal_type, PRINCIPAL_HUMAN)
+        self.assertIsNone(m.agent_id)
+        v = self.store.verify(m.raw_token)
+        self.assertEqual(v.principal_type, PRINCIPAL_HUMAN)
+        self.assertIsNone(v.agent_id)
+
+    def test_agent_round_trip(self):
+        m = self._mint(principal_type="agent", agent_id="triage_agent")
+        self.assertEqual(m.principal_type, "agent")
+        self.assertEqual(m.agent_id, "triage_agent")
+        v = self.store.verify(m.raw_token)
+        self.assertEqual((v.principal_type, v.agent_id), ("agent", "triage_agent"))
+        summary = self.store.list()[0]
+        self.assertEqual((summary.principal_type, summary.agent_id), ("agent", "triage_agent"))
+
+    def test_broker_round_trip_drops_agent_id(self):
+        m = self._mint(principal_type="broker", agent_id="ignored")
+        v = self.store.verify(m.raw_token)
+        self.assertEqual(v.principal_type, "broker")
+        self.assertIsNone(v.agent_id)
+
+    def test_type_is_case_insensitive(self):
+        m = self._mint(principal_type=" Agent ", agent_id="a1")
+        self.assertEqual(m.principal_type, "agent")
+
+    def test_unknown_type_rejected(self):
+        with self.assertRaises(ValueError):
+            self._mint(principal_type="robot")
+        self.assertEqual(self.store.list(), [])
+
+    def test_agent_without_agent_id_rejected(self):
+        for aid in (None, "", "   "):
+            with self.subTest(agent_id=aid):
+                with self.assertRaises(ValueError):
+                    self._mint(principal_type="agent", agent_id=aid)
+        self.assertEqual(self.store.list(), [])
+
+    def test_legacy_entry_without_field_reads_as_mensch(self):
+        m = self._mint()
+        # Simulate a store written before the field existed.
+        data = json.loads(self.store_path.read_text())
+        for e in data["tokens"]:
+            e.pop("principal_type", None)
+            e.pop("agent_id", None)
+        self.store_path.write_text(json.dumps(data))
+        TokenStore._instances.clear()
+        fresh = TokenStore.for_path(self.store_path)
+        v = fresh.verify(m.raw_token)
+        self.assertTrue(v.valid)
+        self.assertEqual(v.principal_type, PRINCIPAL_HUMAN)
+        self.assertIsNone(v.agent_id)
+        self.assertEqual(fresh.list()[0].principal_type, PRINCIPAL_HUMAN)
+
+    def test_store_version_unchanged(self):
+        self._mint(principal_type="agent", agent_id="a1")
+        data = json.loads(self.store_path.read_text())
+        self.assertEqual(data["version"], 1)
+        self.assertEqual(data["tokens"][0]["principal_type"], "agent")
+        self.assertEqual(data["tokens"][0]["agent_id"], "a1")
+
+    def test_normalise_principal_helper(self):
+        self.assertEqual(normalise_principal(None), ("mensch", None))
+        self.assertEqual(normalise_principal("", "x"), ("mensch", None))
+        self.assertEqual(normalise_principal("agent", " a1 "), ("agent", "a1"))
+        with self.assertRaises(ValueError):
+            normalise_principal("agent")
+        with self.assertRaises(ValueError):
+            normalise_principal("nope")
 
 
 class SanitiseArgsTest(unittest.TestCase):

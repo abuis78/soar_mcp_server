@@ -30,6 +30,8 @@ Storage layout: <app_root>/local/mcp_tokens.json
           "salt": "<hex>",
           "encrypted_soar_token": "<fernet ciphertext>",
           "allowed_tools": ["list_cases","get_case",...] or null=all,
+          "principal_type": "mensch" | "agent" | "broker"   (absent = "mensch"),
+          "agent_id": "<agent identifier>" or null        (only for "agent"),
           "created_at": 1717250000,
           "expires_at": 1727250000 or null=never,
           "last_used_at": 1717260000 or null,
@@ -67,6 +69,34 @@ logger = logging.getLogger(__name__)
 _TOKEN_PREFIX = "soarmcp_"
 _TOKEN_RAW_BYTES = 32  # 256 bits of entropy
 _STORE_VERSION = 1
+
+# Kind of principal a scoped token represents (SPEC-MCP, MCP-G01). Entries
+# minted before this field existed carry no value and are read as "mensch".
+# "agent" tokens must also carry an agent_id. Enforcement (read gate, policy
+# initiator, audit) lives in the handler / policy adapter, not here.
+PRINCIPAL_HUMAN = "mensch"
+PRINCIPAL_AGENT = "agent"
+PRINCIPAL_BROKER = "broker"
+PRINCIPAL_TYPES: frozenset[str] = frozenset({PRINCIPAL_HUMAN, PRINCIPAL_AGENT, PRINCIPAL_BROKER})
+
+
+def normalise_principal(principal_type: object, agent_id: object = None) -> tuple[str, Optional[str]]:
+    """Validate (principal_type, agent_id) and return the canonical pair.
+
+    principal_type None/"" -> "mensch" (backwards compatible). Unknown values
+    raise ValueError (never silently downgraded). agent_id is required for
+    "agent" and dropped (None) for every other type.
+    """
+    ptype = (str(principal_type).strip().lower() if principal_type else PRINCIPAL_HUMAN)
+    if ptype not in PRINCIPAL_TYPES:
+        raise ValueError(
+            f"principal_type must be one of {sorted(PRINCIPAL_TYPES)}, got {ptype!r}")
+    aid = str(agent_id).strip()[:128] if agent_id is not None and str(agent_id).strip() else None
+    if ptype == PRINCIPAL_AGENT and not aid:
+        raise ValueError("agent_id is required when principal_type is 'agent'")
+    if ptype != PRINCIPAL_AGENT:
+        aid = None
+    return ptype, aid
 
 # Optional out-of-band Fernet key (issue #56). If this environment variable is
 # set, it is used for encrypt/decrypt in preference to the key stored in
@@ -185,6 +215,8 @@ class MintedToken:
     expires_at: Optional[int]
     allowed_tools: Optional[list[str]]
     soar_user_id: str
+    principal_type: str = PRINCIPAL_HUMAN
+    agent_id: Optional[str] = None
 
 
 @dataclass
@@ -197,6 +229,8 @@ class TokenVerification:
     soar_call_token: Optional[str] = None
     allowed_tools: Optional[list[str]] = None
     reason: str = ""
+    principal_type: str = PRINCIPAL_HUMAN
+    agent_id: Optional[str] = None
 
 
 @dataclass
@@ -210,6 +244,8 @@ class TokenSummary:
     expires_at: Optional[int]
     last_used_at: Optional[int]
     revoked_at: Optional[int]
+    principal_type: str = PRINCIPAL_HUMAN
+    agent_id: Optional[str] = None
 
     @property
     def is_active(self) -> bool:
@@ -311,6 +347,8 @@ class TokenStore:
         soar_call_token: str,
         allowed_tools: Optional[Sequence[str]] = None,
         lifetime_days: Optional[int] = 90,
+        principal_type: Optional[str] = None,
+        agent_id: Optional[str] = None,
     ) -> MintedToken:
         """Mint a new scoped MCP token.
 
@@ -322,12 +360,16 @@ class TokenStore:
             allowed_tools: list of tool names this token may invoke,
                 or None for all (subject to asset config).
             lifetime_days: token validity; None = never expires.
+            principal_type: "mensch" (default), "agent" or "broker" (MCP-G01).
+            agent_id: identifier of the agent; required for "agent", ignored
+                otherwise.
 
         Returns:
             MintedToken with raw_token (show once to user, never again).
         """
         if not label or not soar_user_id or not soar_call_token:
             raise ValueError("label, soar_user_id and soar_call_token are all required")
+        ptype, aid = normalise_principal(principal_type, agent_id)
 
         raw = _TOKEN_PREFIX + secrets.token_urlsafe(_TOKEN_RAW_BYTES)
         salt_hex = secrets.token_hex(16)
@@ -347,6 +389,8 @@ class TokenStore:
                 "salt": salt_hex,
                 "encrypted_soar_token": _encrypt(soar_call_token, _effective_key(state.fernet_key)),
                 "allowed_tools": allowed_tools_list,
+                "principal_type": ptype,
+                "agent_id": aid,
                 "created_at": now,
                 "expires_at": expires_at,
                 "last_used_at": None,
@@ -355,8 +399,8 @@ class TokenStore:
             state.tokens.append(entry)
             self._save(state)
 
-        logger.info("[MCP tokens] minted token id=%s label=%s expires=%s",
-                    token_id, label, expires_at)
+        logger.info("[MCP tokens] minted token id=%s label=%s expires=%s principal=%s",
+                    token_id, label, expires_at, ptype)
         return MintedToken(
             id=token_id,
             label=label,
@@ -364,6 +408,8 @@ class TokenStore:
             expires_at=expires_at,
             allowed_tools=allowed_tools_list,
             soar_user_id=soar_user_id,
+            principal_type=ptype,
+            agent_id=aid,
         )
 
     # ── Verify ───────────────────────────────────────────────────────────────
@@ -420,6 +466,8 @@ class TokenStore:
                     soar_user_id=entry.get("soar_user_id"),
                     soar_call_token=call_token,
                     allowed_tools=entry.get("allowed_tools"),
+                    principal_type=entry.get("principal_type") or PRINCIPAL_HUMAN,
+                    agent_id=entry.get("agent_id"),
                 )
         return TokenVerification(valid=False, reason="unknown_token")
 
@@ -440,6 +488,8 @@ class TokenStore:
                     expires_at=e.get("expires_at"),
                     last_used_at=e.get("last_used_at"),
                     revoked_at=e.get("revoked_at"),
+                    principal_type=e.get("principal_type") or PRINCIPAL_HUMAN,
+                    agent_id=e.get("agent_id"),
                 ))
             return out
 
