@@ -314,6 +314,11 @@ def build_posture_report(config: "McpServerConfig") -> dict:
     # autonomous. Flag ungated execution so the posture reflects it (#151).
     if "run_playbook" in config.enabled_tools and not config.policy_enabled:
         risk_flags.append("run_playbook_without_policy_gate")
+    # SPEC-MCP MCP-L02: every agent read exception widens the agent's direct
+    # SOAR access past the Tool Broker — surface it so it is a conscious choice.
+    agent_read_exceptions = sorted(getattr(config, "agent_read_exceptions", []) or [])
+    if agent_read_exceptions:
+        risk_flags.append("agent_read_exceptions_set")
 
     return {
         "write_tools_enabled": config.write_tools_enabled,
@@ -322,6 +327,7 @@ def build_posture_report(config: "McpServerConfig") -> dict:
         "enable_test_harness": config.enable_test_harness,
         "require_confirmation": config.require_confirmation,
         "policy_enabled": config.policy_enabled,
+        "agent_read_exceptions": agent_read_exceptions,
         "scoped_tokens_enabled": config.scoped_tokens_enabled,
         "scoped_tokens_required": config.scoped_tokens_required,
         "fernet_available": fernet_available,
