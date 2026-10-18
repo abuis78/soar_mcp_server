@@ -407,7 +407,23 @@ class SoarMcpRestHandler(dict):
         actor_id = token_verification.soar_user_id if token_verification is not None else None
         result_text = call_tool(tool_name, arguments, client, config, actor_id=actor_id)
         is_error = self._is_tool_error(result_text)
+        self._audit_tool_result(token_verification, tool_name, arguments,
+                                result=self._classify_result(result_text, is_error))
         return {"content": [{"type": "text", "text": result_text}], "isError": is_error}
+
+    @staticmethod
+    def _classify_result(result_text: str, is_error: bool) -> str:
+        """Audit classification of a tool result (SPEC-MCP MCP-G05).
+
+        policy_blocked (⛔) and policy_hold (⏸) are the policy gate's own
+        markers; everything else is ok / error from _is_tool_error.
+        """
+        head = (result_text or "").lstrip()[:4]
+        if head.startswith("\u26d4"):
+            return "policy_blocked"
+        if head.startswith("\u23f8"):
+            return "policy_hold"
+        return "error" if is_error else "ok"
 
     @staticmethod
     def _is_tool_error(result_text: str) -> bool:
@@ -427,13 +443,45 @@ class SoarMcpRestHandler(dict):
     def _audit_tool_call(token_verification, tool_name: str,
                          arguments: dict, *, outcome: str) -> None:
         """Emit a structured audit line. Never logs the token itself."""
-        token_id = getattr(token_verification, "token_id", None) if token_verification else None
-        label = getattr(token_verification, "label", None) if token_verification else None
         audit_logger.info(
-            "[SOAR MCP] tool_call outcome=%s tool=%s token_id=%s label=%s args=%s",
-            outcome, tool_name, token_id or "legacy", label or "-",
+            "[SOAR MCP] tool_call outcome=%s tool=%s %s args=%s",
+            outcome, tool_name,
+            SoarMcpRestHandler._audit_identity(token_verification, arguments),
             json.dumps(sanitise_args_for_audit(arguments), default=str)[:500],
         )
+
+    @staticmethod
+    def _audit_tool_result(token_verification, tool_name: str,
+                           arguments: dict, *, result: str) -> None:
+        """Second audit line, AFTER the tool ran (SPEC-MCP MCP-G05): what came
+        back — ok / error / policy_blocked / policy_hold. Decision and approval
+        ids (entscheidung_id / freigabe_id) will be appended here in Phase 2."""
+        audit_logger.info(
+            "[SOAR MCP] tool_result result=%s tool=%s %s",
+            result, tool_name,
+            SoarMcpRestHandler._audit_identity(token_verification, arguments),
+        )
+
+    @staticmethod
+    def _audit_identity(token_verification, arguments: dict) -> str:
+        """Caller identity fields shared by both audit lines (MCP-G05):
+        principal (mensch|agent|broker|legacy), token_id, label, agent_id, plus
+        lauf_id / broker_aufruf_id when the caller passed them as top-level
+        arguments (Phase 1: logged only, not enforced). Never the token value."""
+        tv = token_verification
+        token_id = getattr(tv, "token_id", None) if tv else None
+        label = getattr(tv, "label", None) if tv else None
+        principal = (getattr(tv, "principal_type", None) or "mensch") if tv else "legacy"
+        agent_id = getattr(tv, "agent_id", None) if tv else None
+        args = arguments if isinstance(arguments, dict) else {}
+
+        def _s(v: object) -> str:
+            v = str(v).strip() if v is not None else ""
+            return v[:64] if v else "-"
+
+        return (f"principal={principal} token_id={token_id or 'legacy'} label={label or '-'} "
+                f"agent_id={_s(agent_id)} lauf_id={_s(args.get('lauf_id'))} "
+                f"broker_aufruf_id={_s(args.get('broker_aufruf_id'))}")
 
     # ── Helpers ────────────────────────────────────────────────────────────────
 
