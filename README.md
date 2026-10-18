@@ -137,6 +137,7 @@ path segment is the SOAR asset name, for example `mcp`.
 | **ssl_verify** | `true` | Verify TLS certificates for SOAR API calls. Disable only for lab/test instances with self-signed certificates — never on production. |
 | **scoped_tokens_enabled** | `false` | Enable per-user, revocable scoped MCP tokens (v1.5.0+). |
 | **scoped_tokens_required** | `false` | Reject requests that do not present a valid scoped token. |
+| **agent_read_exceptions** | _(empty)_ | v1.15.0+ — comma-separated read-only tools an **agent** token may still call directly (SPEC-MCP MCP-L02). Empty = none. Every entry must be deliberately justified; it is flagged in the security posture. |
 
 **Tool Selection (Checkboxes):**
 
@@ -364,6 +365,7 @@ All configuration is managed from **SOAR UI → Apps → SOAR MCP Server → Ass
 | **enable_test_harness** | Boolean | Enables test harness / `create_container` + `delete_container` (v1.6.9+) |
 | **scoped_tokens_enabled** | Boolean | Enable per-user scoped tokens (v1.5.0+) |
 | **scoped_tokens_required** | Boolean | Reject requests without a valid scoped token |
+| **agent_read_exceptions** | Text | Read-only tools an agent token may call directly (v1.15.0+, default none) |
 | **tool_*** | Boolean × 40 | Enable/disable each tool individually |
 
 **`mcp.conf`-only settings** (`local/mcp.conf`, applied on Test Connectivity):
@@ -471,6 +473,14 @@ procedure.
 - Store in a secure credential manager (1Password, Bitwarden, etc.)
 - Never commit tokens to version control
 - Monitor token usage via SOAR audit logs
+
+**Principal type (v1.15.0+, SPEC-MCP):** every scoped token minted with `mint mcp token` carries a
+`principal_type` — `mensch` (human analyst, default), `agent` (AI agent, needs `agent_id`) or
+`broker` (Tool Broker adapter). Tokens minted before v1.15.0 count as `mensch`. An **agent** token
+gets **no direct read tools**: `tools/list` hides them and any call is refused with
+`USE_TOOL_BROKER` — agents read SOAR data only through Tool Broker templates. Exceptions are an
+explicit admin decision (`agent_read_exceptions`) and are marked in the audit log. Humans and the
+legacy full `ph-auth-token` path are unchanged.
 
 ### Write Tool Safety
 
@@ -587,6 +597,15 @@ tail -f /var/log/phantom/soar/phantom.log | grep soar_mcp_handler
 ---
 
 ## Changelog
+
+### v1.15.0 (2026-10-18) — SPEC-MCP Phase 1: principal type + agent read gate
+Implements Phase 1 of the `soar_mcp_server` rebuild specification (Augmented SOC, SPEC-MCP v0.1). **No behaviour change for existing tokens or the legacy `ph-auth-token` path**; the new gate applies only to tokens minted as `agent`.
+- ✨ **Principal type on scoped tokens (MCP-G01)** — `mint mcp token` takes `principal_type` (`mensch` | `agent` | `broker`, default `mensch`) and `agent_id` (required for `agent`). Stored in the token store (format version unchanged), returned by mint/list; pre-existing entries read as `mensch`.
+- 🔒 **Agent read gate (MCP-L01)** — an `agent` token gets no direct read tools: `tools/list` hides all 33 read-only tools and `tools/call` refuses them with `USE_TOOL_BROKER` (audit `denied:use_tool_broker`). One predicate drives both, so hidden == refused. Enabled write tools remain callable (they go through the policy adapter in Phase 2).
+- ⚙️ **`agent_read_exceptions` (MCP-L02)** — asset-config field / `mcp.conf [policy]`: explicit, admin-justified read tools an agent may still call. Default empty; only read-only names are accepted; a call via exception is audited as `ok:agent_read_exception`; the security posture flags `agent_read_exceptions_set`.
+- 📝 **Audit identity (MCP-G05)** — every `tool_call` line carries `principal`, `token_id`, `agent_id`, `lauf_id`, `broker_aufruf_id` (the last two from top-level arguments, logged only). New `tool_result` line **after** execution with `result=ok|error|policy_blocked|policy_hold` — the hook where `entscheidung_id`/`freigabe_id` land in Phase 2.
+- 🩺 **Diagnostics (MCP-G06, part)** — `diagnose_soar_mcp_environment` reports `principal_counts` (active tokens per principal type; counts only).
+- 🧪 46 new tests (249 total). Phases 2–4 (policy adapter for all write tools, `policy_mode`, Policy Manager service, broker tokens) follow in separate releases.
 
 ### v1.14.0 (2026-07-16)
 - ✨ **#159 Custom Functions — draft write (slice S2)** — two new WRITE tools (45 tools total: 33 read / 12 write, both **off by default**): `create_custom_function_draft` and `update_custom_function_draft`. They only ever write **drafts** — publishing is explicitly refused. Built on the facts the S1 probe measured, not on assumptions:
