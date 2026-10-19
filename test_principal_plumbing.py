@@ -77,6 +77,9 @@ class PrincipalTest(unittest.TestCase):
 
 
 class CallToolPrincipalTest(unittest.TestCase):
+    """Legacy policy_mode (""): the in-app gate receives actor_id and principal
+    for write tools. Read tools never pass through a gate (Phase 2.5)."""
+
     def setUp(self):
         self.cfg = McpServerConfig()
         self.cfg.enabled_tools = set(ALL_TOOLS)
@@ -84,8 +87,8 @@ class CallToolPrincipalTest(unittest.TestCase):
 
     def test_principal_derives_actor_id_when_absent(self):
         with patch("soar_mcp_tools._policy_gate", return_value=None) as gate, \
-                patch.dict("soar_mcp_tools._TOOL_HANDLERS", {"get_soar_info": lambda c, cfg, a: "ok"}):
-            out = call_tool("get_soar_info", {}, self.client, self.cfg,
+                patch.dict("soar_mcp_tools._TOOL_HANDLERS", {"add_case_note": lambda c, cfg, a: "ok"}):
+            out = call_tool("add_case_note", {"case_id": 1, "note": "n"}, self.client, self.cfg,
                             principal=Principal.from_verification(_tv()))
         self.assertEqual(out, "ok")
         args = gate.call_args.args
@@ -94,23 +97,23 @@ class CallToolPrincipalTest(unittest.TestCase):
 
     def test_explicit_actor_id_wins_over_principal(self):
         with patch("soar_mcp_tools._policy_gate", return_value=None) as gate, \
-                patch.dict("soar_mcp_tools._TOOL_HANDLERS", {"get_soar_info": lambda c, cfg, a: "ok"}):
-            call_tool("get_soar_info", {}, self.client, self.cfg, actor_id="bob",
+                patch.dict("soar_mcp_tools._TOOL_HANDLERS", {"add_case_note": lambda c, cfg, a: "ok"}):
+            call_tool("add_case_note", {"case_id": 1, "note": "n"}, self.client, self.cfg, actor_id="bob",
                       principal=Principal.from_verification(_tv()))
         self.assertEqual(gate.call_args.args[4], "bob")
 
     def test_legacy_principal_leaves_actor_id_none(self):
         with patch("soar_mcp_tools._policy_gate", return_value=None) as gate, \
-                patch.dict("soar_mcp_tools._TOOL_HANDLERS", {"get_soar_info": lambda c, cfg, a: "ok"}):
-            call_tool("get_soar_info", {}, self.client, self.cfg,
+                patch.dict("soar_mcp_tools._TOOL_HANDLERS", {"add_case_note": lambda c, cfg, a: "ok"}):
+            call_tool("add_case_note", {"case_id": 1, "note": "n"}, self.client, self.cfg,
                       principal=Principal.from_verification(None))
         self.assertIsNone(gate.call_args.args[4])
         self.assertTrue(gate.call_args.args[5].legacy)
 
     def test_old_call_style_without_principal_unchanged(self):
         with patch("soar_mcp_tools._policy_gate", return_value=None) as gate, \
-                patch.dict("soar_mcp_tools._TOOL_HANDLERS", {"get_soar_info": lambda c, cfg, a: "ok"}):
-            out = call_tool("get_soar_info", {}, self.client, self.cfg, actor_id="carol")
+                patch.dict("soar_mcp_tools._TOOL_HANDLERS", {"add_case_note": lambda c, cfg, a: "ok"}):
+            out = call_tool("add_case_note", {"case_id": 1, "note": "n"}, self.client, self.cfg, actor_id="carol")
         self.assertEqual(out, "ok")
         self.assertEqual(gate.call_args.args[4], "carol")
         self.assertIsNone(gate.call_args.args[5])

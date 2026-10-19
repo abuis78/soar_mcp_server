@@ -33,7 +33,13 @@ from typing import Any, Optional
 
 import requests
 
-from soar_mcp_config import READ_ONLY_TOOLS, McpServerConfig
+from soar_mcp_config import (
+    POLICY_MODE_INVALID,
+    POLICY_MODE_SERVICE,
+    READ_ONLY_TOOLS,
+    McpServerConfig,
+    policy_effective_mode,
+)
 
 # ── Security constants ─────────────────────────────────────────────────────────
 _MAX_NOTE_LENGTH = 10_000   # characters — prevents storage exhaustion (issue #11)
@@ -5435,11 +5441,25 @@ def call_tool(
         arguments = {k: v for k, v in arguments.items() if k != "playbook_name"}
         arguments["playbook_id"] = resolved
 
-    # Policy gate first (gated autonomy) — may block/hold/require approval for
-    # run_playbook (#137/#138).
-    policy_msg = _policy_gate(tool_name, arguments, client, config, actor_id, principal)
-    if policy_msg is not None:
-        return policy_msg
+    # Policy gate first (gated autonomy). SPEC-MCP MCP-G03 / Phase 2.5:
+    #   policy_mode ""        -> today's path: in-app layer, run_playbook only (#137/#138)
+    #   policy_mode "service" -> Policy Manager decides EVERY write tool (MCP-W01)
+    #   anything else         -> invalid: every write tool refused (fail-closed)
+    # Read tools never pass through a gate.
+    if tool_name in _WRITE_TOOLS:
+        mode = policy_effective_mode(config)
+        if mode == POLICY_MODE_INVALID:
+            from policy.service_gate import invalid_policy_mode_message
+            logger.warning("[soar_mcp.policy] policy_mode invalid -> refusing write tool %s", tool_name)
+            return invalid_policy_mode_message()
+        if mode == POLICY_MODE_SERVICE:
+            from policy.service_gate import decide_write_tool
+            policy_msg = decide_write_tool(tool_name, arguments, client, config, principal,
+                                           collect_values=_collect_case_artifact_values)
+        else:
+            policy_msg = _policy_gate(tool_name, arguments, client, config, actor_id, principal)
+        if policy_msg is not None:
+            return policy_msg
     gate = _maybe_require_confirmation(tool_name, arguments, config)
     if gate is not None:
         return gate
