@@ -5343,13 +5343,15 @@ def _policy_gate(
 
     store = _get_approval_store()
     if not provided:
-        token = store.issue("run_playbook", key_args, needed)
+        # The requester is recorded and excluded from approving (#161).
+        token = store.issue("run_playbook", key_args, needed, initiator=actor_id)
         two = "Two DIFFERENT SOAR users must each approve (no self-approval).\n" if needed >= 2 else ""
         return (
             f"⏸ Approval required by policy — {needed} distinct approver(s) needed.\n" + head +
             f"  Reason: {decision.reason}\n\n"
             "Each approver calls run_playbook again with the SAME arguments plus:\n"
             f'  approval_token = "{token}"\n' + two +
+            f"The requester ({actor_id}) cannot approve this action.\n"
             "The token is valid for 10 minutes and only for these exact arguments."
         )
 
@@ -5358,6 +5360,9 @@ def _policy_gate(
                 res.status, res.have, res.need, actor_id, pid)
     if res.approved:
         return None  # fully approved -> fall through to dispatch
+    if res.status == "self_approval":
+        return (f"⏸ You ({actor_id}) requested this action and cannot approve it yourself "
+                f"({res.have}/{res.need}). A DIFFERENT SOAR user must approve.")
     if res.status == "duplicate":
         return (f"⏸ You ({actor_id}) already approved this action ({res.have}/{res.need}). "
                 "A DIFFERENT SOAR user must provide the remaining approval.")
