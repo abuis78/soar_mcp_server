@@ -252,3 +252,46 @@ def decide_write_tool(
         + "  Approval redemption (approve_action / consume) is not available yet in this "
           "version; the request is held and will NOT execute now."
     )
+
+
+def probe_policy_manager(config: Any) -> dict:
+    """Diagnostics (MCP-G06): mode, reachability and halt state of the Policy
+    Manager. Side-effect free: GET /health, then GET /v1/halt. Outside mode
+    ``service`` reachable/halted stay None. Never raises; errors are reported
+    as their class only, never with response bodies.
+    """
+    from soar_mcp_config import POLICY_MODE_SERVICE, policy_effective_mode
+
+    mode = policy_effective_mode(config)
+    out: dict[str, Any] = {
+        "mode": mode,
+        "service_url_configured": bool(getattr(config, "policy_service_url", "")),
+        "reachable": None,
+        "halted": None,
+        "error": None,
+    }
+    if mode != POLICY_MODE_SERVICE:
+        return out
+    try:
+        pm = _get_client(config)
+    except PolicyClientError as exc:
+        out.update(reachable=False, error=exc.kind)
+        return out
+    if pm is None:
+        out.update(reachable=False, error="config")
+        return out
+    try:
+        pm.health()
+        out["reachable"] = True
+    except PolicyClientError as exc:
+        out.update(reachable=False, error=exc.kind)
+        return out
+    except Exception as exc:  # noqa: BLE001
+        out.update(reachable=False, error=type(exc).__name__)
+        return out
+    try:
+        out["halted"] = bool(pm.halt_status())
+    except Exception as exc:  # noqa: BLE001
+        out.update(halted=True, error=type(exc).__name__)  # PM-F31: unknown -> halted
+    return out
+

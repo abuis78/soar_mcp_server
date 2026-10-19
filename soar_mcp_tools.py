@@ -4213,6 +4213,28 @@ def tool_diagnose_soar_mcp_environment(
                              "message": f"Scoped token store could not be read: "
                                         f"{type(exc).__name__}"})
 
+    # SPEC-MCP MCP-G06: policy_mode, Policy Manager reachability and halt
+    # state (service mode only; two side-effect-free GETs). Warnings, not
+    # errors: reads keep working, only write tools are refused meanwhile.
+    try:
+        from policy.service_gate import probe_policy_manager
+        policy_manager = probe_policy_manager(config)
+    except Exception as exc:  # noqa: BLE001
+        policy_manager = {"mode": posture.get("policy_mode"), "service_url_configured": None,
+                          "reachable": None, "halted": None, "error": type(exc).__name__}
+    if policy_manager.get("mode") == "service":
+        if policy_manager.get("reachable") is False:
+            findings.append({"severity": "warn", "code": "policy_manager_unreachable",
+                             "message": ("Policy Manager not reachable "
+                                         f"({policy_manager.get('error') or 'unknown'}): every "
+                                         "write tool is refused until it answers (fail-closed, "
+                                         "no fallback). Read tools are unaffected.")})
+        elif policy_manager.get("halted"):
+            findings.append({"severity": "warn", "code": "policy_manager_halted",
+                             "message": "Policy Manager reports the halt state (Not-Aus): write "
+                                        "requests from agent tokens are refused (HALTED); "
+                                        "human-triggered actions continue."})
+
     data = {
         "app_version": config.server_version,
         "mcp_endpoint": endpoint,
@@ -4222,6 +4244,7 @@ def tool_diagnose_soar_mcp_environment(
         "enabled_tool_count": len(config.enabled_tools),
         "security_posture": posture,
         "principal_counts": principal_counts,
+        "policy_manager": policy_manager,
     }
     ok = auth_present and handler_reachable and not any(
         f.get("severity") == "error" for f in findings

@@ -49,6 +49,7 @@ _ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 
 _PATH_DECIDE = "/v1/decide"
 _PATH_HALT = "/v1/halt"
+_PATH_HEALTH = "/health"
 _PATH_APPROVALS = "/v1/approvals/"
 
 
@@ -267,6 +268,12 @@ class HttpPolicyClient:
         fid = _check_id(freigabe_id, "freigabe_id")
         return self._request("POST", _PATH_APPROVALS + fid + "/consume", {})
 
+    def health(self) -> dict:
+        """Operational probe (PM spec §5: GET /health). ASSUMPTION: HTTP 200
+        with a JSON object means reachable; the body is returned as-is.
+        Raises PolicyClientError otherwise."""
+        return self._request("GET", _PATH_HEALTH)
+
     def halt_status(self) -> bool:
         """True = halted. PM-F31: unknown state counts as halted, so every
         failure path returns True instead of raising."""
@@ -299,9 +306,11 @@ class StubPolicyClient:
         halted: bool = False,
         consume_ok: bool = True,
         approvals: Optional[dict] = None,
+        reachable: bool = True,
     ):
         self.decision = decision or PolicyDecision(entscheidung_id="stub-0001", gate="ALLOW")
         self.halted = halted
+        self.reachable = reachable
         self.consume_ok = consume_ok
         self.approvals: dict = dict(approvals or {})
         self.calls: list[tuple[str, Any]] = []
@@ -330,8 +339,16 @@ class StubPolicyClient:
         self.approvals.pop(fid, None)
         return {"freigabe_id": fid, "consumed": True}
 
+    def health(self) -> dict:
+        self.calls.append(("health", None))
+        if not self.reachable:
+            raise PolicyClientError("GET /health unreachable (stub)", "unreachable")
+        return {"status": "ok"}
+
     def halt_status(self) -> bool:
         self.calls.append(("halt_status", None))
+        if not self.reachable:
+            return True  # PM-F31: unknown -> halted
         return self.halted
 
 

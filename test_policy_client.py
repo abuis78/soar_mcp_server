@@ -201,6 +201,16 @@ class HttpPolicyClientTest(unittest.TestCase):
         self.pm.route("GET", "/v1/halt", 200, {"halted": "no"})
         self.assertTrue(self.client.halt_status())
 
+    # -- health -------------------------------------------------------------
+
+    def test_health_ok_and_failure(self):
+        self.pm.route("GET", "/health", 200, {"status": "ok"})
+        self.assertEqual(self.client.health()["status"], "ok")
+        self.pm.route("GET", "/health", 503, {"status": "down"})
+        with self.assertRaises(PolicyClientError) as cm:
+            self.client.health()
+        self.assertEqual(cm.exception.kind, "http")
+
     # -- approvals ----------------------------------------------------------
 
     def test_approval_status_and_consume(self):
@@ -296,6 +306,13 @@ class StubPolicyClientTest(unittest.TestCase):
             entscheidung_id="pm-x", gate="DENY", code=req["kontext"]["why"]))
         d = stub.decide({"kontext": {"why": "NO_EVIDENCE"}})
         self.assertEqual((d.gate, d.code), ("DENY", "NO_EVIDENCE"))
+
+    def test_unreachable_stub(self):
+        stub = StubPolicyClient(reachable=False)
+        with self.assertRaises(PolicyClientError):
+            stub.health()
+        self.assertTrue(stub.halt_status())  # unknown -> halted
+        self.assertEqual(StubPolicyClient().health(), {"status": "ok"})
 
     def test_halt_consume_and_status(self):
         stub = StubPolicyClient(halted=True, approvals={"ap-1": {"status": "approved"}})
