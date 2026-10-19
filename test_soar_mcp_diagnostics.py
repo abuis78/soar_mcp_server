@@ -189,6 +189,32 @@ class PolicyManagerDiagnosticsTest(unittest.TestCase):
         self.assertEqual((pm["reachable"], pm["halted"]), (True, True))
         self.assertIn("policy_manager_halted", json.dumps(d))
 
+    def test_service_without_scoped_tokens_required_is_info_finding(self):
+        """Phase 3.6 / OQ-7: no identity -> approvals can never complete."""
+        _sg.set_policy_client_override(StubPolicyClient())
+        cfg = self._service_cfg()
+        d = self._diag(cfg)
+        codes = {f["code"]: f["severity"] for f in d.get("findings", [])}
+        self.assertEqual(codes.get("policy_service_without_scoped_tokens"), "info")
+        cfg.scoped_tokens_required = True
+        d = self._diag(cfg)
+        self.assertNotIn("policy_service_without_scoped_tokens", json.dumps(d))
+        self.assertNotIn("policy_service_without_scoped_tokens", json.dumps(self._diag(_cfg())))
+
+    def test_held_actions_count_in_service_mode(self):
+        import os, tempfile
+        from policy.held_actions import HeldAction, HeldActionStore
+        _sg.set_policy_client_override(StubPolicyClient())
+        with tempfile.TemporaryDirectory() as tmp:
+            store = HeldActionStore(os.path.join(tmp, "held.json"))
+            _sg.set_held_store_override(store)
+            self.addCleanup(_sg.set_held_store_override, None)
+            store.put(HeldAction.build("ap-1", "add_case_note", {"case_id": 1}, {}, ablauf="2099-01-01T00:00:00Z"))
+            d = self._diag(self._service_cfg())
+            self.assertEqual(d["data"]["held_actions"], 1)
+            self.assertNotIn("case_id", json.dumps(d["data"]["held_actions"]))
+        self.assertIsNone(self._diag(_cfg())["data"]["held_actions"])
+
     def test_probe_never_leaks_more_than_error_class(self):
         _sg.set_policy_client_override(StubPolicyClient(reachable=False))
         out = _sg.probe_policy_manager(self._service_cfg())

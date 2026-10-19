@@ -58,9 +58,10 @@ class AgentReadGateListTest(unittest.TestCase):
         self.assertEqual(_names(cfg, _tv("mensch")), _names(cfg, None))
         self.assertTrue(READ_ONLY_TOOLS <= _names(cfg, _tv("mensch")))
 
-    def test_broker_unchanged_in_phase1(self):
+    def test_broker_sees_everything_but_gate_tools(self):
+        """Phase 1: brokers unchanged; Phase 3.4: the human-only approve_action is hidden."""
         cfg = _cfg()
-        self.assertEqual(_names(cfg, _tv("broker")), _names(cfg, None))
+        self.assertEqual(_names(cfg, _tv("broker")), _names(cfg, None) - {"approve_action"})
 
     def test_legacy_token_unchanged(self):
         cfg = _cfg()

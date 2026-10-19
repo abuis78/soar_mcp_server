@@ -30,7 +30,7 @@ _app_dir = os.path.dirname(os.path.abspath(__file__))
 if _app_dir not in sys.path:
     sys.path.insert(0, _app_dir)
 
-from soar_mcp_config import READ_ONLY_TOOLS, McpServerConfig, get_config
+from soar_mcp_config import GATE_TOOLS, READ_ONLY_TOOLS, McpServerConfig, get_config
 from soar_mcp_tools import TOOL_SCHEMAS, SoarApiClient, call_tool
 from soar_mcp_utils import redact_nested
 
@@ -340,6 +340,16 @@ class SoarMcpRestHandler(dict):
             return False
         return tool_name not in set(getattr(config, "agent_read_exceptions", []) or [])
 
+    @staticmethod
+    def _human_only_blocked(tool_name: str, token_verification=None) -> bool:
+        """SPEC-MCP MCP-W06 (Phase 3.4): gate tools (approve_action) are for
+        humans. Agent and broker tokens neither see nor call them; one predicate
+        for tools/list and tools/call. Humans and the legacy full token see the
+        tool (the legacy call is refused inside the tool: no approver identity)."""
+        if tool_name not in GATE_TOOLS or token_verification is None:
+            return False
+        return getattr(token_verification, "principal_type", "mensch") in ("agent", "broker")
+
     def _handle_tools_list(self, config: McpServerConfig,
                            token_verification=None) -> dict:
         # Scoped token allow-list intersects with asset-config enabled tools.
@@ -353,6 +363,7 @@ class SoarMcpRestHandler(dict):
             for name, schema in TOOL_SCHEMAS.items()
             if name in allowed and name not in self._HIDDEN_FROM_LIST
             and not self._agent_read_blocked(name, config, token_verification)
+            and not self._human_only_blocked(name, token_verification)
         ]
         logger.info("[SOAR MCP] tools/list → %d tools", len(tools))
         return {"tools": tools}
@@ -406,6 +417,13 @@ class SoarMcpRestHandler(dict):
                 and getattr(token_verification, "principal_type", "mensch") == "agent"
                 and tool_name in READ_ONLY_TOOLS):
             outcome = "ok:agent_read_exception"
+        if self._human_only_blocked(tool_name, token_verification):
+            text = (f"\u26d4 Tool '{tool_name}' is reserved for human analysts with a scoped MCP token "
+                    f"(principal_type = mensch); {getattr(token_verification, 'principal_type', '-')} "
+                    "tokens cannot approve actions.")
+            self._audit_tool_call(token_verification, tool_name, arguments,
+                                  outcome="denied:human_only")
+            return {"content": [{"type": "text", "text": text}], "isError": True}
 
         self._audit_tool_call(token_verification, tool_name, arguments, outcome=outcome)
         # Scoped-token identity is the accountable approver for the policy layer
