@@ -5130,6 +5130,38 @@ def _attach_agent_context_schema() -> None:
 _attach_agent_context_schema()
 
 
+_BROKER_CONTEXT_SCHEMA = {
+    "broker_aufruf_id": {
+        "type": "string",
+        "description": ("Tool Broker call id (aufruf_id). REQUIRED for broker tokens (principal_type = broker, "
+                        "MCP-L04); audited as evidence. Optional for everyone else."),
+    },
+    "agent_id": {
+        "type": "string",
+        "description": "Agent the broker reads for (broker tokens; optional, audited).",
+    },
+    "lauf_id": {
+        "type": "string",
+        "description": "Agent run id the call belongs to (optional, audited).",
+    },
+}
+
+
+def _attach_broker_context_schema() -> None:
+    """SPEC-MCP Phase 4.2 (MCP-L04): the 33 read tools document the broker
+    context arguments. Existing properties are never overwritten."""
+    for _name in READ_ONLY_TOOLS:
+        _schema = TOOL_SCHEMAS.get(_name)
+        if not isinstance(_schema, dict):
+            continue
+        _props = _schema.setdefault("inputSchema", {}).setdefault("properties", {})
+        for _key, _prop in _BROKER_CONTEXT_SCHEMA.items():
+            _props.setdefault(_key, _prop)
+
+
+_attach_broker_context_schema()
+
+
 class _ConfirmStore:
     """File-backed, TTL-bound confirmation tokens keyed on (tool, args).
 

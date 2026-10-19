@@ -85,7 +85,8 @@ class AgentReadGateListTest(unittest.TestCase):
             self.assertEqual(audit.call_args.kwargs.get("outcome"), "denied:broker_write")
         with patch("soar_mcp_handler.call_tool", return_value="ok") as ct, \
                 patch.object(SoarMcpRestHandler, "_audit_tool_call"):
-            res = h._handle_tools_call({"name": "get_case", "arguments": {"case_id": 1}}, object(), cfg, tv)
+            res = h._handle_tools_call({"name": "get_case", "arguments": {"case_id": 1, "broker_aufruf_id": "tb-1"}},
+                                       object(), cfg, tv)
         self.assertFalse(res.get("isError"))
         ct.assert_called_once()
 
@@ -155,7 +156,10 @@ class AgentReadGateCallTest(unittest.TestCase):
     def test_human_broker_legacy_read_unchanged(self):
         for tv in (_tv("mensch"), _tv("broker"), None):
             with self.subTest(principal=getattr(tv, "principal_type", "legacy")):
-                result, ct = _call(_cfg(), tv, "get_case", {"case_id": 1})
+                args = {"case_id": 1}
+                if tv is not None and tv.principal_type == "broker":
+                    args["broker_aufruf_id"] = "tb-1"  # MCP-L04 (Phase 4.2)
+                result, ct = _call(_cfg(), tv, "get_case", args)
                 self.assertFalse(result["isError"])
                 ct.assert_called_once()
 

@@ -132,12 +132,12 @@ class CallToolPrincipalTest(unittest.TestCase):
 
 
 class HandlerPassesPrincipalTest(unittest.TestCase):
-    def _call(self, tv, tool="get_soar_info"):
+    def _call(self, tv, tool="get_soar_info", args=None):
         cfg = McpServerConfig()
         cfg.enabled_tools = set(ALL_TOOLS)
         h = SoarMcpRestHandler.__new__(SoarMcpRestHandler)
         with patch("soar_mcp_handler.call_tool", return_value="fine") as ct:
-            h._handle_tools_call({"name": tool, "arguments": {}}, _FakeClient(), cfg, tv)
+            h._handle_tools_call({"name": tool, "arguments": dict(args or {})}, _FakeClient(), cfg, tv)
         return ct.call_args.kwargs
 
     def test_scoped_human_token(self):
@@ -153,7 +153,7 @@ class HandlerPassesPrincipalTest(unittest.TestCase):
         self.assertEqual(kw["principal"].agent_id, "a1")
 
     def test_broker_token(self):
-        kw = self._call(_tv("broker"))
+        kw = self._call(_tv("broker"), args={"broker_aufruf_id": "tb-1"})  # MCP-L04 (Phase 4.2)
         self.assertEqual(kw["principal"].principal_type, PRINCIPAL_BROKER)
 
     def test_legacy_token(self):
