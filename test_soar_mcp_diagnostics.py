@@ -98,7 +98,7 @@ class PrincipalCountsTest(unittest.TestCase):
         self.store.mint(label="a1", soar_user_id="svc", soar_call_token="ph_a1",
                         principal_type="agent", agent_id="triage")
         self.store.mint(label="b1", soar_user_id="svc", soar_call_token="ph_b1",
-                        principal_type="broker")
+                        principal_type="broker", allowed_tools=["get_case"])
         self.store.revoke(m.id)                       # revoked -> not counted
         cfg = _cfg(); cfg.scoped_tokens_enabled = True
         d, raw = self._diag(cfg)
