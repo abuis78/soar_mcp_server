@@ -560,6 +560,18 @@ gets **no direct read tools**: `tools/list` hides them and any call is refused w
 explicit admin decision (`agent_read_exceptions`) and are marked in the audit log. Humans and the
 legacy full `ph-auth-token` path are unchanged.
 
+**Broker tokens (v1.18.0+, SPEC-MCP Phase 4, MCP-L03..L05):** a `broker` token is the Tool
+Broker's adapter identity and **reads only**. At mint, `allowed_tools` is required and cut to
+`READ_ONLY_TOOLS` (write and approval tools are reported as "not granted"); `tools/list` shows a
+broker only read tools and any write/approval call is refused (`denied:broker_write`), whatever the
+allow-list says. Every broker call must carry the Tool Broker's **`broker_aufruf_id`** as a top-level
+argument (1–128 chars, letters/digits/`._:-`; refused as `denied:missing_broker_aufruf_id` otherwise);
+`agent_id` and `lauf_id` are optional and land in the audit line. A broker's `limit` is capped at
+`max_results` before the tool runs. Catalog tools without a `limit` parameter (`list_apps`,
+`list_assets`, `get_action_schema`, `export_playbook`, …) stay unbounded. Broker tokens minted
+before v1.18.0 without an allow-list keep full read access; `diagnose_soar_mcp_environment`
+flags them (`broker_tokens_without_allow_list`) — re-mint and revoke.
+
 ### Write Tool Safety
 
 Enable write tools in graduated phases:
@@ -675,6 +687,14 @@ tail -f /var/log/phantom/soar/phantom.log | grep soar_mcp_handler
 ---
 
 ## Changelog
+
+### v1.18.0 (2026-10-19) — SPEC-MCP Phase 4: broker tokens as Tool Broker adapter
+Implements Phase 4 of the `soar_mcp_server` rebuild specification (epic [#165](https://github.com/abuis78/soar_mcp_server/issues/165)); decision OQ-3 (2026-10-19): the Tool Broker reads SOAR through this server as an adapter. **No change for human, agent or legacy tokens.**
+- 🔒 **Broker allow-list (MCP-L03)** — `mint mcp token` with `principal_type = broker` requires `allowed_tools`; entries outside `READ_ONLY_TOOLS` are dropped and reported (`dropped_tools`); an empty result refuses the mint.
+- 🚫 **Brokers never write (MCP-L05, AC-07, OQ-14)** — write and approval tools are hidden from a broker's `tools/list` and refused on call (`denied:broker_write`), even when the allow-list names them. One predicate drives both.
+- 🧾 **Broker context (MCP-L04)** — `broker_aufruf_id` is mandatory for broker calls (`denied:missing_broker_aufruf_id`), `agent_id` / `lauf_id` optional; all three are documented on the 33 read-tool schemas and audited (a broker's `agent_id` comes from the argument). `limit` is capped at `max_results` before the tool runs; catalog tools without `limit` stay unbounded (documented).
+- 🩺 **Diagnostics** — `broker_tokens_without_allow_list` warns about pre-4.1 broker tokens (count only).
+- 🧪 15 new tests (442 total).
 
 ### v1.17.0 (2026-10-19) — SPEC-MCP Phase 3: approvals, approve_action, emergency stop
 Implements Phase 3 of the `soar_mcp_server` rebuild specification (epic [#165](https://github.com/abuis78/soar_mcp_server/issues/165)). **No behaviour change in the default `policy_mode`** (AC-11); everything below applies to `policy_mode = service`.
