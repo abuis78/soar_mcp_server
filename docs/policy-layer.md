@@ -265,8 +265,15 @@ index=* "[soar_mcp.policy]" | table _time, host, _raw
   value is invalid and blocks all writes. Implementation: `policy/client.py`,
   `policy/service_gate.py`, `policy/agent_context.py`. See the README section
   "Policy Manager mode" for the request shape, `agent_context` and the current limits.
-  Approval redemption in `service` mode (`approve_action` / consume) and halt enforcement
-  follow in Phase 3 once the Policy Manager P3 interface is final.
+- ✅ **Approvals and emergency stop in `service` mode (v1.17.0, SPEC-MCP Phase 3)** — a held
+  action is remembered under its `freigabe_id` (`policy/held_actions.py`) and redeemed either
+  by the new human-only tool `approve_action(freigabe_id)` (the completing approval consumes
+  and executes it) or by re-calling the tool with `freigabe_id`; both go through the Policy
+  Manager's `approve` / `consume`, which also enforces initiator exclusion. Agent tokens are
+  refused with `HALTED` while the Policy Manager reports the emergency stop (unknown state =
+  halted); humans keep working. Wire format follows `policy_client.base` from the
+  PolicyManager repo. This in-app layer (default mode) is unchanged; `freigabe_id` is merely
+  accepted as an alias of `approval_token` there.
 
 ---
 
