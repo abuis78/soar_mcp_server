@@ -4255,6 +4255,24 @@ def tool_diagnose_soar_mcp_environment(
                              "message": "Policy Manager reports the halt state (Not-Aus): write "
                                         "requests from agent tokens are refused (HALTED); "
                                         "human-triggered actions continue."})
+        # SPEC-MCP Phase 3.6 / concept OQ-7: without scoped tokens there is no
+        # approver identity, so approvals in service mode can never complete.
+        if not getattr(config, "scoped_tokens_required", False):
+            findings.append({"severity": "info", "code": "policy_service_without_scoped_tokens",
+                             "message": ("policy_mode = service without scoped_tokens_required: the "
+                                         "legacy ph-auth-token path has no identity, so its writes are "
+                                         "held with NO_INITIATOR and it can never approve. Recommended: "
+                                         "scoped_tokens_enabled + scoped_tokens_required.")})
+
+    # SPEC-MCP Phase 3.2: actions held for approval on this host (count only).
+    held_actions = None
+    if policy_manager.get("mode") == "service":
+        try:
+            from policy.service_gate import get_held_store
+            held_actions = get_held_store().count()
+        except Exception as exc:  # noqa: BLE001
+            findings.append({"severity": "warn", "code": "held_actions_unreadable",
+                             "message": f"Held-action store could not be read: {type(exc).__name__}"})
 
     data = {
         "app_version": config.server_version,
@@ -4266,6 +4284,7 @@ def tool_diagnose_soar_mcp_environment(
         "security_posture": posture,
         "principal_counts": principal_counts,
         "policy_manager": policy_manager,
+        "held_actions": held_actions,
     }
     ok = auth_present and handler_reachable and not any(
         f.get("severity") == "error" for f in findings
