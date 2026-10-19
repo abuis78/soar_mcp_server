@@ -1,4 +1,5 @@
-"""Contract tests for policy/client.py (SPEC-MCP Phase 2.2, MCP-09).
+"""Contract tests for policy/client.py (SPEC-MCP Phase 2.2, wire aligned to
+policy_client.base in Phase 3.1, MCP-09).
 
 A local plain-HTTP server plays the Policy Manager. TLS is not exercised
 here (no certificates in the repo, L8); the mTLS path is covered up to the
@@ -16,6 +17,17 @@ import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from policy.client import (
+    CODE_CONSUMED,
+    CODE_DUPLICATE,
+    CODE_EXPIRED,
+    CODE_HALTED,
+    CODE_INVALID_RESPONSE,
+    CODE_NOT_APPROVED,
+    CODE_SELF_APPROVAL,
+    CODE_UNKNOWN_APPROVAL,
+    ApprovalStatus,
+    ConsumeResult,
+    HaltStatus,
     HttpPolicyClient,
     PolicyClientError,
     PolicyDecision,
@@ -139,10 +151,17 @@ class HttpPolicyClientTest(unittest.TestCase):
         self.assertEqual(cm.exception.kind, "contract")
 
     def test_decide_missing_id_is_contract_error(self):
-        self.pm.route("POST", "/v1/decide", 200, {"gate": "ALLOW"})
-        with self.assertRaises(PolicyClientError) as cm:
-            self.client.decide({})
-        self.assertEqual(cm.exception.kind, "contract")
+        for gate in ("ALLOW", "APPROVE_1CLICK"):
+            self.pm.route("POST", "/v1/decide", 200, {"gate": gate, "freigabe_id": "ap-1"})
+            with self.assertRaises(PolicyClientError) as cm:
+                self.client.decide({})
+            self.assertEqual(cm.exception.kind, "contract", gate)
+
+    def test_decide_deny_may_come_without_id(self):
+        """policy_client.base: client-side denies carry an empty entscheidung_id."""
+        self.pm.route("POST", "/v1/decide", 200, {"entscheidung_id": "", "gate": "DENY", "code": "NO_INITIATOR"})
+        d = self.client.decide({})
+        self.assertEqual((d.gate, d.entscheidung_id, d.code), ("DENY", "", "NO_INITIATOR"))
 
     def test_decide_http_500_is_http_error(self):
         self.pm.route("POST", "/v1/decide", 500, {"error": "boom"})
@@ -188,18 +207,19 @@ class HttpPolicyClientTest(unittest.TestCase):
     # -- halt ---------------------------------------------------------------
 
     def test_halt_status_true_false(self):
-        self.pm.route("GET", "/v1/halt", 200, {"halted": True})
-        self.assertTrue(self.client.halt_status())
-        self.pm.route("GET", "/v1/halt", 200, {"halted": False})
-        self.assertFalse(self.client.halt_status())
+        """HaltStatus wire: {"angehalten": bool, "grund": str}."""
+        self.pm.route("GET", "/v1/halt", 200, {"angehalten": True, "grund": "incident"})
+        st = self.client.halt_status()
+        self.assertIsInstance(st, HaltStatus)
+        self.assertEqual((st.halted, st.grund), (True, "incident"))
+        self.pm.route("GET", "/v1/halt", 200, {"angehalten": False, "grund": ""})
+        self.assertFalse(self.client.halt_status().halted)
 
     def test_halt_status_unknown_counts_as_halted(self):
-        self.pm.route("GET", "/v1/halt", 500, {"error": "x"})
-        self.assertTrue(self.client.halt_status())
-        self.pm.route("GET", "/v1/halt", 200, {"state": "running"})
-        self.assertTrue(self.client.halt_status())
-        self.pm.route("GET", "/v1/halt", 200, {"halted": "no"})
-        self.assertTrue(self.client.halt_status())
+        for status, body in ((500, {"error": "x"}), (200, {"state": "running"}),
+                             (200, {"angehalten": "no"}), (200, {"halted": False})):
+            self.pm.route("GET", "/v1/halt", status, body)
+            self.assertTrue(self.client.halt_status().halted, body)
 
     # -- health -------------------------------------------------------------
 
@@ -214,25 +234,75 @@ class HttpPolicyClientTest(unittest.TestCase):
     # -- approvals ----------------------------------------------------------
 
     def test_approval_status_and_consume(self):
-        self.pm.route("GET", "/v1/approvals/ap-5521", 200, {"freigabe_id": "ap-5521", "status": "approved"})
-        self.pm.route("POST", "/v1/approvals/ap-5521/consume", 200, {"freigabe_id": "ap-5521", "consumed": True})
-        self.assertEqual(self.client.approval_status("ap-5521")["status"], "approved")
-        self.assertTrue(self.client.consume("ap-5521")["consumed"])
+        """ApprovalStatus / ConsumeResult wire (policy_client.base)."""
+        self.pm.route("GET", "/v1/approvals/ap-5521", 200,
+                      {"freigabe_id": "ap-5521", "status": "approved", "erteilt": 2, "noetig": 2})
+        self.pm.route("POST", "/v1/approvals/ap-5521/consume", 200, {"gueltig": True})
+        st = self.client.approval_status("ap-5521")
+        self.assertIsInstance(st, ApprovalStatus)
+        self.assertEqual((st.status, st.erteilt, st.noetig, st.approved, st.code), ("approved", 2, 2, True, None))
+        request = {"aktion": {"art": "run_playbook"}, "kontext": {}}
+        res = self.client.consume("ap-5521", request)
+        self.assertIsInstance(res, ConsumeResult)
+        self.assertTrue(res.ok)
         self.assertEqual([r[:2] for r in self.pm.requests],
                          [("GET", "/v1/approvals/ap-5521"), ("POST", "/v1/approvals/ap-5521/consume")])
+        self.assertEqual(self.pm.requests[1][2], request)  # consume carries the unchanged action
 
-    def test_consume_failure_raises(self):
+    def test_approve_and_reject_post_the_approver(self):
+        self.pm.route("POST", "/v1/approvals/ap-1/approve", 200,
+                      {"freigabe_id": "ap-1", "status": "pending", "erteilt": 1, "noetig": 2})
+        self.pm.route("POST", "/v1/approvals/ap-1/reject", 200,
+                      {"freigabe_id": "ap-1", "status": "rejected", "erteilt": 1, "noetig": 2})
+        st = self.client.approve("ap-1", "bob")
+        self.assertEqual((st.status, st.erteilt, st.noetig, st.pending), ("pending", 1, 2, True))
+        self.assertEqual(self.pm.requests[-1], ("POST", "/v1/approvals/ap-1/approve", {"freigebender": "bob"}))
+        st = self.client.reject("ap-1", "bob")
+        self.assertEqual(st.status, "rejected")
+        self.assertEqual(self.pm.requests[-1], ("POST", "/v1/approvals/ap-1/reject", {"freigebender": "bob"}))
+
+    def test_approve_carries_lifecycle_code(self):
+        self.pm.route("POST", "/v1/approvals/ap-1/approve", 200,
+                      {"freigabe_id": "ap-1", "status": "pending", "erteilt": 0, "noetig": 2, "code": "SELF_APPROVAL"})
+        st = self.client.approve("ap-1", "alice")
+        self.assertEqual((st.status, st.code), ("pending", CODE_SELF_APPROVAL))
+
+    def test_unknown_approval_status_counts_as_expired(self):
+        self.pm.route("GET", "/v1/approvals/ap-1", 200, {"status": "weird"})
+        st = self.client.approval_status("ap-1")
+        self.assertEqual((st.freigabe_id, st.status), ("ap-1", "expired"))
+
+    def test_consume_not_valid_is_not_ok(self):
+        self.pm.route("POST", "/v1/approvals/ap-1/consume", 200, {"gueltig": False, "code": "EXPIRED"})
+        res = self.client.consume("ap-1", {})
+        self.assertEqual((res.ok, res.code), (False, CODE_EXPIRED))
+        self.pm.route("POST", "/v1/approvals/ap-1/consume", 200, {"ok": True})
+        res = self.client.consume("ap-1", {})
+        self.assertEqual((res.ok, res.code), (False, CODE_INVALID_RESPONSE))
+        self.pm.route("POST", "/v1/approvals/ap-1/consume", 200, {"gueltig": "true"})
+        self.assertFalse(self.client.consume("ap-1", {}).ok)
+
+    def test_consume_transport_failure_raises(self):
         self.pm.route("POST", "/v1/approvals/ap-1/consume", 409, {"error": "expired"})
         with self.assertRaises(PolicyClientError) as cm:
-            self.client.consume("ap-1")
+            self.client.consume("ap-1", {})
         self.assertEqual(cm.exception.kind, "http")
 
-    def test_malformed_freigabe_id_never_hits_the_wire(self):
+    def test_malformed_freigabe_id_or_approver_never_hits_the_wire(self):
         for bad in ("../admin/halt", "ap 1", "", "a" * 200, None):
             with self.assertRaises(PolicyClientError):
-                self.client.consume(bad)  # type: ignore[arg-type]
+                self.client.consume(bad, {})  # type: ignore[arg-type]
             with self.assertRaises(PolicyClientError):
                 self.client.approval_status(bad)  # type: ignore[arg-type]
+            with self.assertRaises(PolicyClientError):
+                self.client.approve(bad, "bob")  # type: ignore[arg-type]
+        for who in ("", "  ", None):
+            with self.assertRaises(PolicyClientError):
+                self.client.approve("ap-1", who)  # type: ignore[arg-type]
+            with self.assertRaises(PolicyClientError):
+                self.client.reject("ap-1", who)  # type: ignore[arg-type]
+        with self.assertRaises(PolicyClientError):
+            self.client.consume("ap-1", ["x"])  # type: ignore[arg-type]
         self.assertEqual(self.pm.requests, [])
 
     # -- construction / TLS ------------------------------------------------
@@ -308,24 +378,52 @@ class StubPolicyClientTest(unittest.TestCase):
         self.assertEqual((d.gate, d.code), ("DENY", "NO_EVIDENCE"))
 
     def test_unreachable_stub(self):
-        stub = StubPolicyClient(reachable=False)
+        stub = StubPolicyClient(reachable=False, approvals={"ap-1": {}})
         with self.assertRaises(PolicyClientError):
             stub.health()
-        self.assertTrue(stub.halt_status())  # unknown -> halted
+        self.assertTrue(stub.halt_status().halted)  # unknown -> halted
+        with self.assertRaises(PolicyClientError):
+            stub.approve("ap-1", "bob")
+        with self.assertRaises(PolicyClientError):
+            stub.consume("ap-1", {})
         self.assertEqual(StubPolicyClient().health(), {"status": "ok"})
 
     def test_halt_consume_and_status(self):
-        stub = StubPolicyClient(halted=True, approvals={"ap-1": {"status": "approved"}})
-        self.assertTrue(stub.halt_status())
-        self.assertEqual(stub.approval_status("ap-1")["status"], "approved")
-        self.assertTrue(stub.consume("ap-1")["consumed"])
+        stub = StubPolicyClient(halted=True, approvals={"ap-1": {"status": "approved", "erteilt": 1}})
+        self.assertTrue(stub.halt_status().halted)
+        self.assertTrue(stub.approval_status("ap-1").approved)
+        self.assertTrue(stub.consume("ap-1", {}).ok)
+        self.assertEqual(stub.approval_status("ap-1").status, "consumed")
+        self.assertEqual(stub.consume("ap-1", {}).code, CODE_CONSUMED)  # single use
+        self.assertEqual(stub.consume("ap-9", {}).code, CODE_UNKNOWN_APPROVAL)
+        stub2 = StubPolicyClient(consume_ok=False, approvals={"ap-2": {"status": "approved"}})
+        self.assertEqual(stub2.consume("ap-2", {}).code, CODE_EXPIRED)
         with self.assertRaises(PolicyClientError):
-            stub.approval_status("ap-1")  # consumed -> gone
-        stub2 = StubPolicyClient(consume_ok=False)
-        with self.assertRaises(PolicyClientError):
-            stub2.consume("ap-2")
-        with self.assertRaises(PolicyClientError):
-            stub2.consume("../x")
+            stub2.consume("../x", {})
+
+    def test_stub_approval_lifecycle_mirrors_embedded_client(self):
+        stub = StubPolicyClient(approvals={"ap-1": {"noetig": 2, "initiator": "alice"}})
+        self.assertEqual(stub.consume("ap-1", {}).code, CODE_NOT_APPROVED)
+        self.assertEqual(stub.approve("ap-1", "alice").code, CODE_SELF_APPROVAL)
+        st = stub.approve("ap-1", "bob")
+        self.assertEqual((st.status, st.erteilt, st.noetig, st.code), ("pending", 1, 2, None))
+        self.assertEqual(stub.approve("ap-1", "bob").code, CODE_DUPLICATE)
+        st = stub.approve("ap-1", "carol")
+        self.assertEqual((st.status, st.erteilt), ("approved", 2))
+        self.assertTrue(stub.consume("ap-1", {}).ok)
+        self.assertEqual([c[0] for c in stub.calls],
+                         ["consume", "approve", "approve", "approve", "approve", "consume"])
+
+    def test_stub_halt_blocks_approve_and_agent_consume(self):
+        stub = StubPolicyClient(halted=True, approvals={"ap-1": {}, "ap-2": {"status": "approved", "principal": "agent"}})
+        self.assertEqual(stub.approve("ap-1", "bob").code, CODE_HALTED)
+        self.assertEqual(stub.consume("ap-2", {}).code, CODE_HALTED)
+        self.assertEqual(stub.approval_status("ap-2").status, "expired")
+
+    def test_stub_reject(self):
+        stub = StubPolicyClient(approvals={"ap-1": {}})
+        self.assertEqual(stub.reject("ap-1", "bob").status, "rejected")
+        self.assertEqual(stub.approve("ap-1", "carol").code, CODE_NOT_APPROVED)
 
 
 class BuildPolicyClientTest(unittest.TestCase):

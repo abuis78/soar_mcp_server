@@ -10,18 +10,19 @@ The decision logic lives in the Policy Manager. This module never decides
 anything itself; the only local refusals are fail-closed ones (unusable
 configuration, missing evidence/judgement for agent tokens, transport errors).
 
-Request shape follows the PolicyManager spec §5 example. Fields marked
-ASSUMPTION go beyond that example and must be confirmed against the real
-service (PolicyManager P3):
+Request shape = ``policy_client.base.DecisionRequest.to_wire()`` (PolicyManager
+repo, feature/p1-core @ c6851e7) on top of the PM spec §5 example:
 
     {
-      "aktion":    {"art": <tool>, "ziel": {...ids...}, "parameter": {...},
-                    "kategorie": ..., "playbook": ...},          # last two: run_playbook only
-      "kontext":   {stufe, domaene, tipping_off, lauf_id, beleg_ids, urteil,
-                    "agent_id": ..., "agent_konfidenz": ...,
-                    "asset_werte": [...]},                        # ASSUMPTION: name of the artifact values list
-      "initiator": {"principal_type", "token_id", "soar_user_id",
-                    "agent_id", "legacy"}                         # ASSUMPTION: field name (AN-08 demands the content)
+      "aktion":  {"art": <tool>, "kategorie": "", "playbook": "",      # category/name: run_playbook only
+                  "ziel": ["case_id=3", ...], "parameter": {...}},
+      "kontext": {"principal_type": mensch|agent|broker,
+                  "initiator": <soar_user_id | agent_id | "">,       # "" = legacy token, no identity (OQ-7)
+                  "agent_id": "", "lauf_id": "", "schritt_id": "",
+                  "domaene": "", "tipping_off": "",
+                  "beleg_ids": [...], "urteil": {...},
+                  "artefakt_werte": [...],                           # case artifact values (MCP-W03)
+                  ["stufe": 0-4], ["agent_konfidenz": 0-1]}
     }
 
 Reversibility is never sent (AN-05).
@@ -102,23 +103,38 @@ def build_decide_request(
     asset_values: Optional[list] = None,
     playbook: Optional[dict] = None,
 ) -> dict:
-    """Assemble the /v1/decide body. Pure function, no I/O."""
+    """Assemble the /v1/decide body (``DecisionRequest.to_wire`` shape).
+    Pure function, no I/O."""
     args = arguments or {}
-    ziel = {k: v for k, v in args.items()
+    ziel = [f"{k}={v}" for k, v in args.items()
             if k.endswith("_id") and k not in _NON_TARGET_IDS and k not in _GATE_ARGS
-            and isinstance(v, (int, str)) and not isinstance(v, bool)}
+            and isinstance(v, (int, str)) and not isinstance(v, bool)]
     parameter = {k: v for k, v in args.items() if k not in _GATE_ARGS}
-    aktion: dict[str, Any] = {"art": tool_name, "ziel": ziel, "parameter": parameter}
+    aktion: dict[str, Any] = {"art": tool_name, "kategorie": "", "playbook": "",
+                              "ziel": ziel, "parameter": parameter}
     if tool_name == "run_playbook" and isinstance(playbook, dict):
         aktion["kategorie"] = playbook.get("category") or ""
         aktion["playbook"] = playbook.get("name") or ""
 
-    kontext: dict[str, Any] = dict(agent_ctx or {})
+    ctx = agent_ctx or {}
     is_agent = bool(getattr(principal, "is_agent", False))
+    kontext: dict[str, Any] = {
+        "principal_type": getattr(principal, "principal_type", None) or "mensch",
+        "initiator": principal_identity(principal),
+        "agent_id": (getattr(principal, "agent_id", None) or "") if is_agent else "",
+        "lauf_id": str(ctx.get("lauf_id") or ""),
+        "schritt_id": "",
+        "domaene": str(ctx.get("domaene") or ""),
+        "tipping_off": str(ctx.get("tipping_off") or ""),
+        "beleg_ids": list(ctx.get("beleg_ids") or []),
+        "urteil": dict(ctx.get("urteil") or {}),
+        "artefakt_werte": list(asset_values or []),
+    }
+    if ctx.get("stufe") is not None:
+        kontext["stufe"] = ctx["stufe"]
     if is_agent:
-        kontext["agent_id"] = getattr(principal, "agent_id", None)
         # MCP-W05: the only confidence source for agents is the checked judgement.
-        konf = (kontext.get("urteil") or {}).get("konfidenz")
+        konf = kontext["urteil"].get("konfidenz")
         if konf is not None:
             kontext["agent_konfidenz"] = konf
     else:
@@ -126,16 +142,19 @@ def build_decide_request(
         ac = args.get("agent_confidence")
         if isinstance(ac, (int, float)) and not isinstance(ac, bool):
             kontext["agent_konfidenz"] = float(ac)
-    kontext["asset_werte"] = list(asset_values or [])
+    return {"aktion": aktion, "kontext": kontext}
 
-    initiator = {
-        "principal_type": getattr(principal, "principal_type", "mensch"),
-        "token_id": getattr(principal, "token_id", None),
-        "soar_user_id": getattr(principal, "soar_user_id", None),
-        "agent_id": getattr(principal, "agent_id", None) if is_agent else None,
-        "legacy": bool(getattr(principal, "legacy", principal is None)),
-    }
-    return {"aktion": aktion, "kontext": kontext, "initiator": initiator}
+
+def principal_identity(principal: Any) -> str:
+    """The accountable identity the Policy Manager keys initiator exclusion and
+    approvals on: the scoped token's ``soar_user_id`` for humans and brokers,
+    ``agent_id`` for agents, "" for the legacy full token (OQ-7: no identity,
+    never an approver; the Policy Manager answers NO_INITIATOR for holds)."""
+    if principal is None:
+        return ""
+    if getattr(principal, "is_agent", False):
+        return str(getattr(principal, "agent_id", None) or "")
+    return str(getattr(principal, "soar_user_id", None) or "")
 
 
 def _summarise(decision: PolicyDecision) -> str:
@@ -290,7 +309,7 @@ def probe_policy_manager(config: Any) -> dict:
         out.update(reachable=False, error=type(exc).__name__)
         return out
     try:
-        out["halted"] = bool(pm.halt_status())
+        out["halted"] = bool(pm.halt_status().halted)
     except Exception as exc:  # noqa: BLE001
         out.update(halted=True, error=type(exc).__name__)  # PM-F31: unknown -> halted
     return out

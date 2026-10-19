@@ -192,24 +192,39 @@ class RequestShapeTest(_Base):
         self.assertEqual(req["aktion"]["art"], "run_playbook")
         self.assertEqual(req["aktion"]["kategorie"], "Enrichment")
         self.assertEqual(req["aktion"]["playbook"], "PB")
-        self.assertEqual(req["aktion"]["ziel"], {"case_id": 3, "playbook_id": 7})
+        self.assertEqual(req["aktion"]["ziel"], ["case_id=3", "playbook_id=7"])
         self.assertEqual(req["aktion"]["parameter"], {"case_id": 3, "playbook_id": 7, "scope": "new"})
-        self.assertIn("srv-fs-01", req["kontext"]["asset_werte"])
-        self.assertIn("10.0.0.5", req["kontext"]["asset_werte"])
+        self.assertIn("srv-fs-01", req["kontext"]["artefakt_werte"])
+        self.assertIn("10.0.0.5", req["kontext"]["artefakt_werte"])
         self.assertNotIn("reversible", str(req))
+        self.assertEqual(set(req), {"aktion", "kontext"})
+
+    def test_request_matches_policy_client_base_wire(self):
+        """Every key of DecisionRequest.to_wire() (PolicyManager P1.5) is present."""
+        req = self._request("add_case_note", {"case_id": 1, "note": "n"})
+        self.assertEqual(set(req["aktion"]), {"art", "kategorie", "playbook", "ziel", "parameter"})
+        self.assertEqual(set(req["kontext"]), {"principal_type", "initiator", "agent_id", "lauf_id", "schritt_id",
+                                               "domaene", "tipping_off", "beleg_ids", "urteil", "artefakt_werte"})
+        self.assertEqual((req["aktion"]["kategorie"], req["aktion"]["playbook"]), ("", ""))
+        req = self._request("add_case_note", {"case_id": 1, "note": "n", "agent_context": AGENT_CTX},
+                            principal=_principal("agent", "a1"))
+        self.assertIn("stufe", req["kontext"])
+        self.assertIn("agent_konfidenz", req["kontext"])
 
     def test_initiator_for_human_agent_and_legacy(self):
+        """kontext.principal_type / initiator / agent_id (MCP-W04, OQ-7)."""
+        def ident(req):
+            k = req["kontext"]
+            return k["principal_type"], k["initiator"], k["agent_id"]
         req = self._request("add_case_note", {"case_id": 1, "note": "n"})
-        self.assertEqual(req["initiator"], {"principal_type": "mensch", "token_id": "tok_x",
-                                            "soar_user_id": "alice", "agent_id": None, "legacy": False})
+        self.assertEqual(ident(req), ("mensch", "alice", ""))
+        self.assertNotIn("tok_x", str(req))  # token ids never travel
         req = self._request("add_case_note", {"case_id": 1, "note": "n", "agent_context": AGENT_CTX},
                             principal=_principal("agent", "triage"))
-        self.assertEqual(req["initiator"]["principal_type"], "agent")
-        self.assertEqual(req["initiator"]["agent_id"], "triage")
-        self.assertEqual(req["kontext"]["agent_id"], "triage")
+        self.assertEqual(ident(req), ("agent", "triage", "triage"))
         req = self._request("add_case_note", {"case_id": 1, "note": "n"}, principal=_principal("legacy"))
-        self.assertEqual(req["initiator"], {"principal_type": "mensch", "token_id": None,
-                                            "soar_user_id": None, "agent_id": None, "legacy": True})
+        self.assertEqual(ident(req), ("mensch", "", ""))
+        self.assertEqual(sg.principal_identity(None), "")
 
     def test_gate_arguments_never_sent_as_parameters(self):
         req = self._request("add_case_note", {"case_id": 1, "note": "n", "approval_token": "t",
@@ -227,7 +242,7 @@ class RequestShapeTest(_Base):
 
     def test_correlation_ids_are_not_targets(self):
         req = self._request("add_case_note", {"case_id": 1, "note": "n", "lauf_id": "r", "broker_aufruf_id": "b"})
-        self.assertEqual(req["aktion"]["ziel"], {"case_id": 1})
+        self.assertEqual(req["aktion"]["ziel"], ["case_id=1"])
 
     def test_no_case_id_means_no_asset_lookup(self):
         self._request("create_container", {"name": "x", "label": "test"})
@@ -239,7 +254,7 @@ class RequestShapeTest(_Base):
         with patch("soar_mcp_tools._collect_case_artifact_values", side_effect=boom):
             out = self.call("add_case_note", {"case_id": 1, "note": "n"})
         self.assertEqual(out, "ran:add_case_note")
-        self.assertEqual(self.stub.calls[-1][1]["kontext"]["asset_werte"], [])
+        self.assertEqual(self.stub.calls[-1][1]["kontext"]["artefakt_werte"], [])
 
 
 class AgentRulesTest(_Base):
@@ -278,7 +293,8 @@ class AgentRulesTest(_Base):
     def test_broker_principal_also_goes_through_decide(self):
         out = self.call("add_case_note", {"case_id": 1, "note": "n"}, principal=_principal("broker"))
         self.assertEqual(out, "ran:add_case_note")
-        self.assertEqual(self.stub.calls[-1][1]["initiator"]["principal_type"], "broker")
+        self.assertEqual(self.stub.calls[-1][1]["kontext"]["principal_type"], "broker")
+        self.assertEqual(self.stub.calls[-1][1]["kontext"]["initiator"], "alice")
 
 
 class DryRunTest(_Base):
