@@ -255,6 +255,15 @@ index=* "[soar_mcp.policy]" | table _time, host, _raw
   increment for richer criticality signals.
 - ✅ **Diagnostics (#151)** — `diagnose_soar_mcp_environment` now reports
   `policy_enabled` and flags an ungated `run_playbook` (`run_playbook_without_policy_gate`).
+- ✅ **Policy Manager mode (v1.16.0, SPEC-MCP Phase 2, epic #165)** — the asset field
+  `policy_mode` selects the decision path for **all 12 write tools**: empty (default) keeps
+  this in-app layer exactly as described here; `service` hands every write to the external
+  Policy Manager (`POST /v1/decide`, fail-closed, no fallback to this layer); any other
+  value is invalid and blocks all writes. Implementation: `policy/client.py`,
+  `policy/service_gate.py`, `policy/agent_context.py`. See the README section
+  "Policy Manager mode" for the request shape, `agent_context` and the current limits.
+  Approval redemption in `service` mode (`approve_action` / consume) and halt enforcement
+  follow in Phase 3 once the Policy Manager P3 interface is final.
 
 ---
 
