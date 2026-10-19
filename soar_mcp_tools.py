@@ -34,6 +34,7 @@ from typing import Any, Optional
 import requests
 
 from soar_mcp_config import (
+    GATE_TOOLS,
     POLICY_MODE_INVALID,
     POLICY_MODE_SERVICE,
     READ_ONLY_TOOLS,
@@ -564,6 +565,26 @@ TOOL_SCHEMAS: dict[str, dict] = {
         "inputSchema": {"type": "object", "properties": {}},
     },
     # ── Write tools ──────────────────────────────────────────────────────────
+    "approve_action": {
+        "description": (
+            "APPROVAL — Approve a held action by its Policy Manager freigabe_id "
+            "(policy_mode = service). For human analysts with a scoped MCP token only: "
+            "the token identity is the approver, the requester can never approve their own "
+            "action, and two-person gates need two different users. The call that completes "
+            "the approval redeems it (consume) and executes the held action; its result is "
+            "returned. In the default policy mode this tool only explains the approval_token path."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "freigabe_id": {
+                    "type": "string",
+                    "description": "The freigabe_id from the ⏸ hold message of the held action.",
+                },
+            },
+            "required": ["freigabe_id"],
+        },
+    },
     "add_case_note": {
         "description": (
             "⚠️ WRITE OPERATION — Add a note or comment to a SOAR case. "
@@ -4984,7 +5005,14 @@ TOOL_SCHEMAS["detect_custom_function_capabilities"] = {
 }
 
 
+def tool_approve_action(client: SoarApiClient, config: McpServerConfig, arguments: dict) -> str:
+    """Placeholder: approve_action is intercepted in call_tool because it needs the
+    caller's Principal (SPEC-MCP Phase 3.4). Reached only via a direct handler call."""
+    return "⛔ approve_action must be called through the MCP server (needs the caller identity)."
+
+
 _TOOL_HANDLERS = {
+    "approve_action": tool_approve_action,
     "list_cases": tool_list_cases,
     "get_case": tool_get_case,
     "search_cases": tool_search_cases,
@@ -5048,7 +5076,8 @@ _TOOL_HANDLERS = {
 
 # ── Write-tool confirmation gate (issue #50) ──────────────────────────────────
 # Write tools are those with a handler that are not read-only.
-_WRITE_TOOLS: frozenset[str] = frozenset(_TOOL_HANDLERS) - READ_ONLY_TOOLS
+# Gate tools (approve_action) are neither read nor write tools (SPEC-MCP Phase 3.4).
+_WRITE_TOOLS: frozenset[str] = frozenset(_TOOL_HANDLERS) - READ_ONLY_TOOLS - GATE_TOOLS
 
 
 # ── Agent context on every write tool (SPEC-MCP MCP-W07, concept OQ-12) ──────
@@ -5467,6 +5496,13 @@ def call_tool(
     if handler is None:
         return f"Unknown tool: '{tool_name}'"
     arguments = arguments or {}
+
+    # SPEC-MCP Phase 3.4 (MCP-W06): approve_action needs the caller identity and
+    # executes the held tool's handler itself after consume — no gate, no confirmation.
+    if tool_name == "approve_action":
+        from policy.service_gate import approve_action as _approve_action
+        return _approve_action(arguments, client, config, principal,
+                               dispatch=lambda held_tool, held_args: _TOOL_HANDLERS[held_tool](client, config, held_args))
 
     # Resolve run_playbook's playbook_name -> playbook_id BEFORE any gate, so a
     # name invocation can never bypass the policy gate (#148). Canonicalize to

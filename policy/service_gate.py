@@ -388,6 +388,144 @@ def redeem_held_action(tool_name: str, args: dict, config: Any, principal: Any, 
     return None
 
 
+def approve_action(
+    arguments: dict,
+    client: Any,
+    config: Any,
+    principal: Any,
+    *,
+    dispatch: Callable[[str, dict], str],
+) -> str:
+    """Tool ``approve_action(freigabe_id)`` (MCP-W06, OQ-11/OQ-16, SPEC-MCP 3.4).
+
+    Humans with a scoped MCP token only (principal_type = mensch, identity =
+    token's soar_user_id). The approval itself is judged by the Policy Manager
+    (initiator exclusion, duplicates, halt). The call that completes the
+    approval redeems it (``consume``) and executes the held action via
+    ``dispatch(tool, args)``; the result is returned to the approver.
+    Never raises; every failure path refuses without executing.
+    """
+    from soar_mcp_config import POLICY_MODE_INVALID, POLICY_MODE_SERVICE, policy_effective_mode
+
+    args = arguments or {}
+    ident = _ident(principal)
+    mode = policy_effective_mode(config)
+    if mode == POLICY_MODE_INVALID:
+        return invalid_policy_mode_message()
+    if mode != POLICY_MODE_SERVICE:
+        return ("ℹ️ approve_action needs policy_mode = service. In the default mode approvals work as "
+                "before: each approver calls run_playbook again with the same arguments plus "
+                "approval_token (freigabe_id is accepted as an alias). Nothing was executed.")
+    fid = str(args.get("freigabe_id") or "").strip()
+    if not fid:
+        return "⛔ approve_action needs freigabe_id (from the ⏸ hold message). Nothing was executed."
+
+    ptype = getattr(principal, "principal_type", None) or "mensch"
+    approver = str(getattr(principal, "soar_user_id", None) or "").strip()
+    if principal is None or getattr(principal, "legacy", True) or ptype != "mensch" or not approver:
+        why = ("agent and broker tokens cannot approve" if ptype != "mensch"
+               else "this call carries no scoped-token identity (legacy ph-auth-token)")
+        logger.info("[soar_mcp.policy] approve_action refused=NO_APPROVER freigabe_id=%s %s", fid, ident)
+        return (f"⛔ approve_action is for human analysts with a scoped MCP token (principal_type = mensch, "
+                f"identity = token): {why}. Mint a scoped MCP token per approver ('mint mcp token') and "
+                "retry. Nothing was executed.")
+
+    try:
+        pm = _get_client(config)
+    except PolicyClientError as exc:
+        logger.error("[soar_mcp.policy] approve_action client config error %s: %s", ident, exc)
+        return f"⛔ Blocked by policy: Policy Manager client configuration error ({exc.reason})."
+    if pm is None:
+        return invalid_policy_mode_message()
+
+    store = get_held_store()
+    try:
+        held = store.get(fid)
+    except Exception as exc:  # noqa: BLE001
+        logger.error("[soar_mcp.policy] approve_action held store unreadable freigabe_id=%s: %s", fid, type(exc).__name__)
+        held = None
+    if held is None:
+        logger.info("[soar_mcp.policy] approve_action refused=UNKNOWN_HELD_ACTION freigabe_id=%s approver=%s %s",
+                    fid, approver, ident)
+        return (f"⛔ No held action for freigabe_id={fid} on this SOAR host: unknown, expired or already "
+                "redeemed. The requester must request the action again. Nothing was executed.")
+
+    try:
+        status = pm.approve(fid, approver)
+    except PolicyClientError as exc:
+        logger.error("[soar_mcp.policy] approve_action service unavailable freigabe_id=%s %s kind=%s: %s",
+                     fid, ident, exc.kind, exc.reason)
+        return (f"⛔ Blocked by policy: Policy Manager unavailable ({exc.kind}: {exc.reason}). "
+                "No fallback (fail-closed). Nothing was executed; the approval is untouched.")
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("[soar_mcp.policy] approve_action client failure freigabe_id=%s %s", fid, ident)
+        return f"⛔ Blocked by policy: Policy Manager client failure ({type(exc).__name__}). Nothing was executed."
+
+    noetig = status.noetig or held.noetig
+    logger.info("[soar_mcp.policy] approve_action status=%s code=%s erteilt=%s noetig=%s freigabe_id=%s "
+                "entscheidung_id=%s approver=%s initiator=%s %s",
+                status.status, status.code or "-", status.erteilt, noetig, fid, held.entscheidung_id,
+                approver, held.initiator or "-", ident)
+    head = f"freigabe_id={fid} (entscheidung_id={held.entscheidung_id}, held {held.tool})"
+    if status.code == "SELF_APPROVAL":
+        return (f"⏸ You ({approver}) requested this action and cannot approve it yourself "
+                f"({status.erteilt}/{noetig}). A DIFFERENT SOAR user must approve {head}. Nothing was executed.")
+    if status.code == "DUPLICATE":
+        return (f"⏸ You ({approver}) already approved this action ({status.erteilt}/{noetig}). "
+                f"A DIFFERENT SOAR user must provide the remaining approval for {head}. Nothing was executed.")
+    if status.code == "HALTED":
+        return (f"⛔ Blocked by policy (HALTED): the Policy Manager is in emergency stop; approvals are not "
+                f"accepted for {head}. Nothing was executed.")
+    if status.code and not status.approved:
+        return (f"⛔ Blocked by policy: approval not counted ({status.code}, status {status.status}) for {head}. "
+                "Nothing was executed.")
+    if status.pending:
+        remaining = max(0, noetig - status.erteilt)
+        return (f"⏸ Approval recorded ({status.erteilt}/{noetig}) by {approver} for {head}. "
+                f"{remaining} more distinct approver(s) required — they call "
+                f'approve_action(freigabe_id="{fid}"). Nothing was executed.')
+    if not status.approved:
+        if status.status in _FINAL_APPROVAL_STATES:
+            _forget(store, fid)
+        return (f"⛔ Blocked by policy: approval {status.status} for {head}. The requester must request the "
+                "action again. Nothing was executed.")
+
+    # Fully approved: the held tool must still be enabled; nothing is consumed before that check.
+    enabled = getattr(config, "enabled_tools", None)
+    if enabled is not None and held.tool not in enabled:
+        return (f"⛔ Approved, but tool '{held.tool}' is disabled in the asset configuration, so {head} "
+                "cannot execute. Enable it, run Test Connectivity and call approve_action again. "
+                "Nothing was executed; the approval is untouched.")
+    try:
+        result = pm.consume(fid, held.request)
+    except PolicyClientError as exc:
+        logger.error("[soar_mcp.policy] approve_action consume unavailable freigabe_id=%s %s kind=%s: %s",
+                     fid, ident, exc.kind, exc.reason)
+        return (f"⛔ Blocked by policy: Policy Manager unavailable on consume ({exc.kind}: {exc.reason}). "
+                "Nothing was executed; call approve_action again later.")
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("[soar_mcp.policy] approve_action consume failure freigabe_id=%s %s", fid, ident)
+        return f"⛔ Blocked by policy: Policy Manager client failure ({type(exc).__name__}). Nothing was executed."
+    if not result.ok:
+        if result.code in _FINAL_CONSUME_CODES:
+            _forget(store, fid)
+        logger.info("[soar_mcp.policy] approve_action consume refused code=%s freigabe_id=%s %s",
+                    result.code or "-", fid, ident)
+        return (f"⛔ Blocked by policy: consume refused ({result.code or 'no code'}) for {head}. "
+                "Nothing was executed.")
+    _forget(store, fid)
+    logger.info("[soar_mcp.policy] approve_action executed tool=%s freigabe_id=%s entscheidung_id=%s "
+                "gate=%s approver=%s initiator=%s %s",
+                held.tool, fid, held.entscheidung_id, held.gate, approver, held.initiator or "-", ident)
+    try:
+        out = dispatch(held.tool, dict(held.args))
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("[soar_mcp.policy] approve_action dispatch failed tool=%s freigabe_id=%s", held.tool, fid)
+        out = f"Internal error executing tool '{held.tool}': {type(exc).__name__}"
+    return (f"✅ Approved ({status.erteilt}/{noetig}) and executed {held.tool} — {head}, "
+            f"approved by {approver}, requested by {held.initiator or 'unknown'}.\n{out}")
+
+
 def _forget(store: HeldActionStore, fid: str) -> None:
     try:
         store.remove(fid)

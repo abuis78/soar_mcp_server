@@ -230,6 +230,13 @@
             "required": false,
             "order": 93
         },
+        "tool_approve_action": {
+            "description": "APPROVAL \u2014 approve_action: Approve a held action by its Policy Manager freigabe_id (policy_mode = service, v1.17.0+). Humans with a scoped MCP token only; the call that completes the approval redeems (consume) and executes the held action. Off by default.",
+            "data_type": "boolean",
+            "default": false,
+            "required": false,
+            "order": 95
+        },
         "custom_function_write_scm_ids": {
             "description": "Custom Function write allowlist (issue #159) — comma-separated repository (scm_id) values that the draft-write tools may write to. EMPTY = no writes at all (fail-safe default). Resolve ids with detect_custom_function_capabilities; they are NOT stable across instances (on the reference instance 'local' is 2 and 'community' is 1). Never grant a community or production repository. Example: 2",
             "data_type": "string",

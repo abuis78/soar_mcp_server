@@ -118,6 +118,9 @@ ALL_TOOLS: list[str] = [
     # READ_ONLY_TOOLS: that is what makes them write tools (confirmation gate).
     "create_custom_function_draft",
     "update_custom_function_draft",
+    # Approval tool (v1.17.0+, SPEC-MCP Phase 3.4, MCP-W06): a GATE tool, see
+    # GATE_TOOLS below — neither read-only nor a write tool.
+    "approve_action",
 ]
 
 READ_ONLY_TOOLS: frozenset[str] = frozenset(
@@ -164,6 +167,11 @@ READ_ONLY_TOOLS: frozenset[str] = frozenset(
         "detect_custom_function_capabilities",
     ]
 )
+
+# SPEC-MCP Phase 3.4 (MCP-W06): gate tools redeem policy approvals. They are
+# neither read-only (agents/brokers never see them) nor write tools (they are
+# not decided by the Policy Manager themselves). Off by default like write tools.
+GATE_TOOLS: frozenset[str] = frozenset(["approve_action"])
 
 
 @dataclass
