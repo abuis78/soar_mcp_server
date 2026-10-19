@@ -341,6 +341,16 @@ class SoarMcpRestHandler(dict):
         return tool_name not in set(getattr(config, "agent_read_exceptions", []) or [])
 
     @staticmethod
+    def _broker_write_blocked(tool_name: str, token_verification=None) -> bool:
+        """SPEC-MCP MCP-L05 / AC-07 / concept OQ-14 (Phase 4.1): a broker token
+        reads only. Every tool outside READ_ONLY_TOOLS (write and approval
+        tools) is hidden from tools/list and refused on tools/call, even when
+        allowed_tools names it. One predicate for both, so hidden == refused."""
+        if token_verification is None or tool_name in READ_ONLY_TOOLS:
+            return False
+        return getattr(token_verification, "principal_type", "mensch") == "broker"
+
+    @staticmethod
     def _human_only_blocked(tool_name: str, token_verification=None) -> bool:
         """SPEC-MCP MCP-W06 (Phase 3.4): gate tools (approve_action) are for
         humans. Agent and broker tokens neither see nor call them; one predicate
@@ -364,6 +374,7 @@ class SoarMcpRestHandler(dict):
             if name in allowed and name not in self._HIDDEN_FROM_LIST
             and not self._agent_read_blocked(name, config, token_verification)
             and not self._human_only_blocked(name, token_verification)
+            and not self._broker_write_blocked(name, token_verification)
         ]
         logger.info("[SOAR MCP] tools/list → %d tools", len(tools))
         return {"tools": tools}
@@ -417,6 +428,12 @@ class SoarMcpRestHandler(dict):
                 and getattr(token_verification, "principal_type", "mensch") == "agent"
                 and tool_name in READ_ONLY_TOOLS):
             outcome = "ok:agent_read_exception"
+        if self._broker_write_blocked(tool_name, token_verification):
+            text = (f"\u26d4 Tool '{tool_name}' is not a read tool. Broker tokens (principal_type = broker) "
+                    "can only call tools from READ_ONLY_TOOLS, regardless of their allow-list (MCP-L05).")
+            self._audit_tool_call(token_verification, tool_name, arguments,
+                                  outcome="denied:broker_write")
+            return {"content": [{"type": "text", "text": text}], "isError": True}
         if self._human_only_blocked(tool_name, token_verification):
             text = (f"\u26d4 Tool '{tool_name}' is reserved for human analysts with a scoped MCP token "
                     f"(principal_type = mensch); {getattr(token_verification, 'principal_type', '-')} "
