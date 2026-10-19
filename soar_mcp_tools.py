@@ -4169,6 +4169,15 @@ def _count_tokens_by_principal() -> dict:
     return counts
 
 
+def _count_broker_tokens_without_allow_list() -> int:
+    """SPEC-MCP Phase 4.3: active broker tokens minted before 4.1 may carry no
+    allow-list and therefore reach every read tool (MCP-L03 wants the list
+    narrowed to what the broker needs). Count only, never ids."""
+    from soar_mcp_tokens import PRINCIPAL_BROKER, TokenStore
+    return sum(1 for t in TokenStore.default().list()
+               if t.is_active and t.principal_type == PRINCIPAL_BROKER and not t.allowed_tools)
+
+
 def tool_diagnose_soar_mcp_environment(
     client: SoarApiClient, config: McpServerConfig, args: dict
 ) -> str:
@@ -4229,6 +4238,13 @@ def tool_diagnose_soar_mcp_environment(
     if getattr(config, "scoped_tokens_enabled", False):
         try:
             principal_counts = _count_tokens_by_principal()
+            open_brokers = _count_broker_tokens_without_allow_list()
+            if open_brokers:
+                findings.append({"severity": "warn", "code": "broker_tokens_without_allow_list",
+                                 "message": (f"{open_brokers} active broker token(s) carry no allowed_tools "
+                                             "and can reach every read tool. Re-mint them with the read "
+                                             "tools the Tool Broker actually needs (MCP-L03) and revoke "
+                                             "the old ones.")})
         except Exception as exc:
             findings.append({"severity": "warn", "code": "token_store_unreadable",
                              "message": f"Scoped token store could not be read: "
