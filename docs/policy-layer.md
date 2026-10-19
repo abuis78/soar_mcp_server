@@ -135,9 +135,12 @@ confirm-store discipline).
 ### Enabling real approvals
 Approvals need scoped tokens:
 1. Asset config → check **`scoped_tokens_enabled`** → Save → Test Connectivity.
-2. Mint one token per approver with the **`mint mcp token`** action
-   (`soar_user_id = alice`, `= bob`, …).
+2. Mint one token per person, including the requester, with the **`mint mcp token`**
+   action (`soar_user_id = alice`, `= bob`, …).
 3. Each approver's MCP client uses its own token.
+
+The requester cannot approve (#161): a 1-click needs at least two users (requester +
+approver), a 2-person at least three.
 
 Until then, gated runs simply stay held (safe).
 
