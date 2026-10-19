@@ -5022,6 +5022,23 @@ _TOOL_HANDLERS = {
 _WRITE_TOOLS: frozenset[str] = frozenset(_TOOL_HANDLERS) - READ_ONLY_TOOLS
 
 
+# ── Agent context on every write tool (SPEC-MCP MCP-W07, concept OQ-12) ──────
+# One optional object instead of six loose arguments. Never added to
+# "required": humans keep calling the tools exactly as before; the Policy
+# Manager adapter enforces it for agent tokens.
+def _attach_agent_context_schema() -> None:
+    from policy.agent_context import AGENT_CONTEXT_SCHEMA
+    for _name in _WRITE_TOOLS:
+        _schema = TOOL_SCHEMAS.get(_name)
+        if not isinstance(_schema, dict):
+            continue
+        _props = _schema.setdefault("inputSchema", {}).setdefault("properties", {})
+        _props.setdefault("agent_context", AGENT_CONTEXT_SCHEMA)
+
+
+_attach_agent_context_schema()
+
+
 class _ConfirmStore:
     """File-backed, TTL-bound confirmation tokens keyed on (tool, args).
 

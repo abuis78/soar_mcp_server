@@ -35,6 +35,11 @@ from soar_mcp_tools import TOOL_SCHEMAS, SoarApiClient, call_tool
 from soar_mcp_utils import redact_nested
 
 try:
+    from policy.agent_context import lauf_id_from_arguments
+except Exception:  # noqa: BLE001
+    lauf_id_from_arguments = None  # type: ignore[assignment]
+
+try:
     from soar_mcp_tokens import Principal, TokenStore, TokenVerification, sanitise_args_for_audit
 except Exception:  # noqa: BLE001
     Principal = None  # type: ignore[misc,assignment]
@@ -484,8 +489,11 @@ class SoarMcpRestHandler(dict):
             v = str(v).strip() if v is not None else ""
             return v[:64] if v else "-"
 
+        # lauf_id: agent_context.lauf_id first (Phase 2, OQ-12), then the
+        # Phase-1 top-level argument.
+        lauf_id = lauf_id_from_arguments(args) if lauf_id_from_arguments is not None else args.get("lauf_id")
         return (f"principal={principal} token_id={token_id or 'legacy'} label={label or '-'} "
-                f"agent_id={_s(agent_id)} lauf_id={_s(args.get('lauf_id'))} "
+                f"agent_id={_s(agent_id)} lauf_id={_s(lauf_id)} "
                 f"broker_aufruf_id={_s(args.get('broker_aufruf_id'))}")
 
     # ── Helpers ────────────────────────────────────────────────────────────────
