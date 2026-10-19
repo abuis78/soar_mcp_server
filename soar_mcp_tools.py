@@ -5055,7 +5055,20 @@ _WRITE_TOOLS: frozenset[str] = frozenset(_TOOL_HANDLERS) - READ_ONLY_TOOLS
 # One optional object instead of six loose arguments. Never added to
 # "required": humans keep calling the tools exactly as before; the Policy
 # Manager adapter enforces it for agent tokens.
+_FREIGABE_ID_SCHEMA = {
+    "type": "string",
+    "description": (
+        "Policy Manager approval id (freigabe_id) of a held action (policy_mode = service). "
+        "Call the tool again with the SAME arguments plus freigabe_id once all approvals are in; "
+        "the approval is redeemed (consume) and the action executed. In the default mode it is "
+        "accepted as an alias of approval_token (run_playbook)."
+    ),
+}
+
+
 def _attach_agent_context_schema() -> None:
+    """SPEC-MCP: every write tool takes the optional gate arguments
+    agent_context (Phase 2.4, MCP-W07) and freigabe_id (Phase 3.3, MCP-W06)."""
     from policy.agent_context import AGENT_CONTEXT_SCHEMA
     for _name in _WRITE_TOOLS:
         _schema = TOOL_SCHEMAS.get(_name)
@@ -5063,6 +5076,7 @@ def _attach_agent_context_schema() -> None:
             continue
         _props = _schema.setdefault("inputSchema", {}).setdefault("properties", {})
         _props.setdefault("agent_context", AGENT_CONTEXT_SCHEMA)
+        _props.setdefault("freigabe_id", _FREIGABE_ID_SCHEMA)
 
 
 _attach_agent_context_schema()
@@ -5376,8 +5390,10 @@ def _policy_gate(
 
     # 1CLICK / 2PERSON: collect distinct human approval(s) before executing (#138).
     needed = decision.needed_approvers
-    key_args = {k: v for k, v in arguments.items() if k != "approval_token"}
-    provided = arguments.get("approval_token")
+    # freigabe_id is accepted as an alias of approval_token (SPEC-MCP Phase 3.3,
+    # concept step 3.2): same store, same semantics, nothing else changes.
+    key_args = {k: v for k, v in arguments.items() if k not in ("approval_token", "freigabe_id")}
+    provided = arguments.get("approval_token") or arguments.get("freigabe_id")
     head = (f"  Playbook: {name or pid} | Category: {category or 'unknown'} | "
             f"Gate: {decision.gate.name}\n")
 

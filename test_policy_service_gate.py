@@ -265,10 +265,13 @@ class RequestShapeTest(_Base):
 
     def test_gate_arguments_never_sent_as_parameters(self):
         req = self._request("add_case_note", {"case_id": 1, "note": "n", "approval_token": "t",
-                                              "confirm_token": "c", "freigabe_id": "ap-1",
-                                              "agent_context": {"stufe": 1}})
+                                              "confirm_token": "c", "agent_context": {"stufe": 1}})
         self.assertEqual(set(req["aktion"]["parameter"]), {"case_id", "note"})
         self.assertEqual(req["kontext"]["stufe"], 1)
+        # freigabe_id switches call_tool to the redeem path (3.3); the builder itself drops it too.
+        req = sg.build_decide_request("add_case_note", {"case_id": 1, "freigabe_id": "ap-1"}, _principal(), None)
+        self.assertEqual(set(req["aktion"]["parameter"]), {"case_id"})
+        self.assertEqual(req["aktion"]["ziel"], ["case_id=1"])
 
     def test_agent_context_fields_land_in_kontext(self):
         req = self._request("update_case_severity", {"case_id": 1, "severity": "high", "agent_context": AGENT_CTX},
@@ -358,6 +361,110 @@ class DryRunTest(_Base):
         self.assertFalse(sg.is_dry_run("add_case_note", {"dry_run": True}))
         self.assertTrue(sg.is_dry_run("save_playbook_layout_only", {}))
         self.assertFalse(sg.is_dry_run("save_playbook_layout_only", {"dry_run": False}))
+
+
+class RedeemTest(_Base):
+    """Phase 3.3: re-call with freigabe_id redeems a held action (MCP-W06, OQ-11, AC-05)."""
+
+    ARGS = {"case_id": 5, "note": "n"}
+
+    def _hold(self, fid="ap-1", noetig=2, principal=None):
+        self.stub.decision = PolicyDecision(entscheidung_id="pm-10", gate="APPROVE_2PERSON",
+                                            freigaben_noetig=noetig, freigabe_id=fid,
+                                            ablauf="2099-01-01T00:00:00Z")
+        out = self.call("add_case_note", self.ARGS, principal=principal)
+        self.assertTrue(out.startswith("⏸"))
+        self.stub.add_approval(fid, noetig=noetig, initiator="alice")
+        self.stub.calls.clear()
+        return fid
+
+    def test_pending_approval_holds_without_consume(self):
+        fid = self._hold()
+        self.stub.approve(fid, "bob")
+        self.stub.calls.clear()
+        out = self.call("add_case_note", dict(self.ARGS, freigabe_id=fid))
+        self.assertTrue(out.startswith("⏸"))
+        self.assertIn("1/2", out)
+        self.assertIn('approve_action(freigabe_id="ap-1")', out)
+        self.assertEqual([c[0] for c in self.stub.calls], ["approval_status"])
+        self.assertIsNotNone(self.held.get(fid))
+
+    def test_approved_is_consumed_then_executed_once(self):
+        fid = self._hold()
+        self.stub.approve(fid, "bob")
+        self.stub.approve(fid, "carol")
+        self.stub.calls.clear()
+        with self.assertLogs("soar_mcp.policy", level="INFO") as cm:
+            out = self.call("add_case_note", dict(self.ARGS, freigabe_id=fid, confirm_token="c"))
+        self.assertEqual(out, "ran:add_case_note")
+        self.assertEqual([c[0] for c in self.stub.calls], ["approval_status", "consume"])
+        self.assertEqual(self.stub.calls[1][1][0], fid)
+        self.assertEqual(self.stub.calls[1][1][1]["aktion"]["art"], "add_case_note")  # the held request
+        self.assertIn("redeemed freigabe_id=ap-1 entscheidung_id=pm-10", "\n".join(cm.output))
+        self.assertIsNone(self.held.get(fid))
+        # Second redemption: nothing held any more, nothing executed.
+        out = self.call("add_case_note", dict(self.ARGS, freigabe_id=fid))
+        self.assertTrue(out.startswith("⛔"))
+        self.assertIn("No held action", out)
+
+    def test_changed_arguments_or_tool_are_refused_locally(self):
+        fid = self._hold()
+        out = self.call("add_case_note", {"case_id": 5, "note": "CHANGED", "freigabe_id": fid})
+        self.assertIn("ACTION_CHANGED", out)
+        out = self.call("update_case_status", {"case_id": 5, "status": "closed", "freigabe_id": fid})
+        self.assertIn("ACTION_CHANGED", out)
+        self.assertEqual(self.stub.calls, [])
+        self.assertIsNotNone(self.held.get(fid))
+
+    def test_rejected_expired_consumed_refuse_and_forget(self):
+        for state in ("rejected", "expired", "consumed"):
+            with self.subTest(state=state):
+                fid = self._hold(fid=f"ap-{state}")
+                self.stub.approvals[fid]["status"] = state
+                out = self.call("add_case_note", dict(self.ARGS, freigabe_id=fid))
+                self.assertTrue(out.startswith("⛔"))
+                self.assertIn(state, out)
+                self.assertIsNone(self.held.get(fid))
+                self.assertNotIn("consume", [c[0] for c in self.stub.calls])
+
+    def test_consume_refused_never_executes(self):
+        fid = self._hold(noetig=1)
+        self.stub.approve(fid, "bob")
+        self.stub.consume_ok = False  # stub answers gueltig=false, EXPIRED
+        out = self.call("add_case_note", dict(self.ARGS, freigabe_id=fid))
+        self.assertTrue(out.startswith("⛔"))
+        self.assertIn("EXPIRED", out)
+        self.assertIsNone(self.held.get(fid))
+
+    def test_service_unavailable_on_redeem_is_fail_closed(self):
+        fid = self._hold(noetig=1)
+        self.stub.approve(fid, "bob")
+        self.stub.reachable = False
+        out = self.call("add_case_note", dict(self.ARGS, freigabe_id=fid))
+        self.assertTrue(out.startswith("⛔"))
+        self.assertIn("unavailable", out)
+        self.assertIsNotNone(self.held.get(fid))  # approval untouched, can be retried
+
+    def test_unknown_freigabe_id_is_refused_without_network(self):
+        out = self.call("add_case_note", dict(self.ARGS, freigabe_id="ap-nope"))
+        self.assertIn("No held action", out)
+        self.assertEqual(self.stub.calls, [])
+        out = self.call("add_case_note", dict(self.ARGS, freigabe_id="../x"))
+        self.assertTrue(out.startswith("⛔"))
+        self.assertEqual(self.stub.calls, [])
+
+    def test_redeem_skips_decide_and_agent_context_check(self):
+        """The held request was validated at hold time; redemption needs no new context."""
+        fid = self._hold(noetig=1)
+        self.stub.approve(fid, "bob")
+        out = self.call("add_case_note", dict(self.ARGS, freigabe_id=fid), principal=_principal("agent", "a1"))
+        self.assertEqual(out, "ran:add_case_note")
+        self.assertNotIn("decide", [c[0] for c in self.stub.calls])
+
+    def test_legacy_mode_ignores_service_redeem_path(self):
+        out = self.call("add_case_note", dict(self.ARGS, freigabe_id="ap-1"), cfg=_cfg(mode=""))
+        self.assertEqual(out, "ran:add_case_note")
+        self.assertEqual(self.stub.calls, [])
 
 
 class ClientCacheTest(unittest.TestCase):

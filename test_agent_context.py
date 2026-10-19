@@ -117,11 +117,14 @@ class SchemaAttachmentTest(unittest.TestCase):
                 schema = TOOL_SCHEMAS[name]["inputSchema"]
                 self.assertIs(schema["properties"]["agent_context"], AGENT_CONTEXT_SCHEMA)
                 self.assertNotIn("agent_context", schema.get("required", []))
+                self.assertEqual(schema["properties"]["freigabe_id"]["type"], "string")  # Phase 3.3
+                self.assertNotIn("freigabe_id", schema.get("required", []))
 
     def test_read_tools_untouched(self):
         for name in READ_ONLY_TOOLS:
             if name in TOOL_SCHEMAS:
                 self.assertNotIn("agent_context", TOOL_SCHEMAS[name]["inputSchema"].get("properties", {}))
+                self.assertNotIn("freigabe_id", TOOL_SCHEMAS[name]["inputSchema"].get("properties", {}))
 
     def test_schema_is_json_serialisable_and_closed(self):
         json.dumps(AGENT_CONTEXT_SCHEMA)
