@@ -122,7 +122,9 @@ arguments plus the token**:
   there is **no accountable approver → the run stays held** (fail-safe).
 - **1-click:** one valid approval → runs.
 - **2-person:** two approvals from **two different** `soar_user_id`s → runs.
-  The same user approving twice is rejected (**no self-approval**).
+  The same user approving twice is rejected (**no double counting**).
+- **Requester excluded:** the initiator (scoped-token identity of the first call)
+  can never approve the action, not even a 1-click (#161).
 - The token store is **file-backed** (survives SOAR's multi-process handler),
   **`fcntl`-locked**, **single-use** on completion, and **TTL-bound** (10 min).
   Only a SHA-256 hash of the token is stored — never the raw token.
@@ -203,6 +205,7 @@ The guard is designed so **every failure mode holds or blocks — never auto-run
 | Policy layer import/instantiation error | `DENY` (blocked) with a clear message |
 | Gated run, but caller has no scoped-token identity | Held (no accountable approver) |
 | Invalid/expired `approval_token` | Held; restart the approval |
+| Requester tries to approve own action | Held (`self_approval`); a different user must approve |
 | Risk inputs absent | Risk gate = `ALLOW` (no *relaxation*; base gate still applies) |
 
 Risk and override can only **raise** the gate; nothing in the pipeline can turn a
@@ -257,7 +260,8 @@ index=* "[soar_mcp.policy]" | table _time, host, _raw
 
 ## 11. Related issues / source
 
-- Epic **#135**; phases **#136** (core), **#137** (guard), **#138** (approvals).
+- Epic **#135**; phases **#136** (core), **#137** (guard), **#138** (approvals),
+  **#161** (initiator exclusion).
 - UI checkbox **#144** · run-by-name **#148**.
 - Source: [`policy/policy_layer.py`](../policy/policy_layer.py),
   [`policy/approvals.py`](../policy/approvals.py),
