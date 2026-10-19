@@ -35,8 +35,9 @@ from soar_mcp_tools import TOOL_SCHEMAS, SoarApiClient, call_tool
 from soar_mcp_utils import redact_nested
 
 try:
-    from soar_mcp_tokens import TokenStore, TokenVerification, sanitise_args_for_audit
+    from soar_mcp_tokens import Principal, TokenStore, TokenVerification, sanitise_args_for_audit
 except Exception:  # noqa: BLE001
+    Principal = None  # type: ignore[misc,assignment]
     TokenStore = None  # type: ignore[misc,assignment]
     TokenVerification = None  # type: ignore[misc,assignment]
 
@@ -405,7 +406,11 @@ class SoarMcpRestHandler(dict):
         # Scoped-token identity is the accountable approver for the policy layer
         # (#138); legacy full tokens have no bound user -> None (fail-safe HOLD).
         actor_id = token_verification.soar_user_id if token_verification is not None else None
-        result_text = call_tool(tool_name, arguments, client, config, actor_id=actor_id)
+        # SPEC-MCP MCP-W04: the full caller identity (type, token_id, agent_id)
+        # for the Policy Manager adapter. Legacy ph-auth-token -> mensch, legacy.
+        principal = Principal.from_verification(token_verification) if Principal is not None else None
+        result_text = call_tool(tool_name, arguments, client, config,
+                                actor_id=actor_id, principal=principal)
         is_error = self._is_tool_error(result_text)
         self._audit_tool_result(token_verification, tool_name, arguments,
                                 result=self._classify_result(result_text, is_error))

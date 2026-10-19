@@ -5262,12 +5262,16 @@ def _resolve_playbook_id_by_name(name: str, client: SoarApiClient, config: McpSe
 def _policy_gate(
     tool_name: str, arguments: dict, client: SoarApiClient, config: McpServerConfig,
     actor_id: Optional[str] = None,
+    principal: Optional["Principal"] = None,
 ) -> Optional[str]:
     """Gated-autonomous run_playbook (#137/#138). Returns a block/hold/approval
     message, or None to proceed. Only acts on run_playbook when [policy]
     enabled = true. Every decision is audited (including ALLOW). Fail-safe: any
     error -> not ALLOW. 1CLICK/2PERSON collect distinct human approval(s) keyed
-    on the scoped-token identity (actor_id) before execution."""
+    on the scoped-token identity (actor_id) before execution.
+
+    principal (SPEC-MCP Phase 2.3) carries the full caller identity for the
+    Policy Manager adapter; the legacy in-app path below still keys on actor_id."""
     if tool_name != "run_playbook" or not getattr(config, "policy_enabled", False):
         return None
 
@@ -5380,16 +5384,23 @@ def call_tool(
     client: SoarApiClient,
     config: McpServerConfig,
     actor_id: Optional[str] = None,
+    principal: Optional["Principal"] = None,
 ) -> str:
     """
     Dispatch a tool call to its implementation.
 
     actor_id is the scoped-token soar_user_id of the caller (None for legacy
     full tokens); the policy layer uses it as the accountable approver identity.
+    principal (SPEC-MCP MCP-W04) is the full caller identity (type, token_id,
+    agent_id) for the Policy Manager adapter. When principal is given and
+    actor_id is not, actor_id is derived from it; existing callers that pass
+    only actor_id keep working unchanged.
 
     Returns a text string as the MCP content response.
     Never raises; errors are returned as text.
     """
+    if actor_id is None and principal is not None:
+        actor_id = principal.actor_id
     handler = _TOOL_HANDLERS.get(tool_name)
     if handler is None:
         return f"Unknown tool: '{tool_name}'"
@@ -5409,7 +5420,7 @@ def call_tool(
 
     # Policy gate first (gated autonomy) — may block/hold/require approval for
     # run_playbook (#137/#138).
-    policy_msg = _policy_gate(tool_name, arguments, client, config, actor_id)
+    policy_msg = _policy_gate(tool_name, arguments, client, config, actor_id, principal)
     if policy_msg is not None:
         return policy_msg
     gate = _maybe_require_confirmation(tool_name, arguments, config)
