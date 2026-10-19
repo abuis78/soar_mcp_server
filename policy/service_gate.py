@@ -239,6 +239,9 @@ def decide_write_tool(
         return f"⛔ Blocked by policy: Policy Manager client configuration error ({exc.reason})."
     if pm is None:  # mode is not service (caller should not have come here) -> fail-closed
         return invalid_policy_mode_message()
+    halted = _agent_halted(pm, principal, tool_name, ident)
+    if halted is not None:
+        return halted
 
     # Context the Policy Manager needs from SOAR: playbook category/name for
     # run_playbook (as today) and the case's artifact values (MCP-W03). Both
@@ -304,6 +307,27 @@ def decide_write_tool(
     return hold_message(decision, tool_name, needed, summary, stored=stored)
 
 
+def _agent_halted(pm: PolicyClient, principal: Any, tool_name: str, ident: str) -> Optional[str]:
+    """Emergency stop (MCP-W08, AC-09, PM-F30/F31, SPEC-MCP Phase 3.5): before an
+    agent principal's write is decided or redeemed, GET /v1/halt. Halted or
+    unknown state -> ⛔ HALTED without a decide round-trip. Humans, brokers and
+    the legacy token are never checked here (PM-F33: people keep working). The
+    state is never cached so a halt takes effect on the next call."""
+    if not getattr(principal, "is_agent", False):
+        return None
+    try:
+        status = pm.halt_status()
+        halted, grund = bool(status.halted), str(getattr(status, "grund", "") or "")
+    except Exception as exc:  # noqa: BLE001 — halt_status should never raise; treat as unknown
+        halted, grund = True, f"halt state unknown ({type(exc).__name__})"
+    if not halted:
+        return None
+    logger.warning("[soar_mcp.policy] service refused=HALTED tool=%s %s grund=%s", tool_name, ident, grund or "-")
+    return (f"⛔ Blocked by policy (HALTED): the agent chain is in emergency stop"
+            + (f" ({grund})" if grund else "") + ". Agent tokens cannot write or redeem approvals until the "
+            "Policy Manager is resumed; human analysts are not affected. Nothing was executed.")
+
+
 def _action_args(args: dict) -> dict:
     return {k: v for k, v in (args or {}).items() if k not in _GATE_ARGS}
 
@@ -327,6 +351,9 @@ def redeem_held_action(tool_name: str, args: dict, config: Any, principal: Any, 
         return f"⛔ Blocked by policy: Policy Manager client configuration error ({exc.reason})."
     if pm is None:
         return invalid_policy_mode_message()
+    halted = _agent_halted(pm, principal, tool_name, ident)
+    if halted is not None:
+        return halted
 
     store = get_held_store()
     try:

@@ -467,6 +467,73 @@ class RedeemTest(_Base):
         self.assertEqual(self.stub.calls, [])
 
 
+class HaltTest(_Base):
+    """Phase 3.5: emergency stop for the agent chain (MCP-W08, AC-09, PM-F31/F33)."""
+
+    def test_halted_blocks_agent_writes_without_decide(self):
+        self.stub.halted = True
+        out = self.call("add_case_note", {"case_id": 1, "note": "n", "agent_context": AGENT_CTX},
+                        principal=_principal("agent", "a1"))
+        self.assertTrue(out.startswith("⛔"), out)
+        self.assertIn("HALTED", out)
+        self.assertEqual([c[0] for c in self.stub.calls], ["halt_status"])
+
+    def test_halted_blocks_agent_redeem(self):
+        self.stub.decision = PolicyDecision(entscheidung_id="pm-1", gate="APPROVE_1CLICK", freigabe_id="ap-1",
+                                            ablauf="2099-01-01T00:00:00Z")
+        self.call("add_case_note", {"case_id": 1, "note": "n"})
+        self.stub.add_approval("ap-1", status="approved", erteilt=1, noetig=1, initiator="alice")
+        self.stub.halted = True
+        self.stub.calls.clear()
+        out = self.call("add_case_note", {"case_id": 1, "note": "n", "freigabe_id": "ap-1"},
+                        principal=_principal("agent", "a1"))
+        self.assertIn("HALTED", out)
+        self.assertEqual([c[0] for c in self.stub.calls], ["halt_status"])
+        self.assertIsNotNone(self.held.get("ap-1"))
+
+    def test_humans_brokers_and_legacy_keep_working(self):
+        self.stub.halted = True
+        for p in (_principal(), _principal("broker"), _principal("legacy")):
+            with self.subTest(principal=p.principal_type + ("/legacy" if p.legacy else "")):
+                self.stub.calls.clear()
+                out = self.call("add_case_note", {"case_id": 1, "note": "n"}, principal=p)
+                self.assertEqual(out, "ran:add_case_note")
+                self.assertEqual([c[0] for c in self.stub.calls], ["decide"])
+
+    def test_unknown_halt_state_counts_as_halted(self):
+        self.stub.reachable = False  # halt_status -> halted (PM-F31)
+        out = self.call("add_case_note", {"case_id": 1, "note": "n", "agent_context": AGENT_CTX},
+                        principal=_principal("agent", "a1"))
+        self.assertIn("HALTED", out)
+        self.stub.reachable = True
+        self.stub.halt_status = lambda: (_ for _ in ()).throw(RuntimeError("bug"))
+        out = self.call("add_case_note", {"case_id": 1, "note": "n", "agent_context": AGENT_CTX},
+                        principal=_principal("agent", "a1"))
+        self.assertIn("HALTED", out)
+        self.assertIn("RuntimeError", out)
+
+    def test_not_halted_agent_proceeds_to_decide(self):
+        with self.assertLogs("soar_mcp.policy", level="INFO"):
+            out = self.call("add_case_note", {"case_id": 1, "note": "n", "agent_context": AGENT_CTX},
+                            principal=_principal("agent", "a1"))
+        self.assertEqual(out, "ran:add_case_note")
+        self.assertEqual([c[0] for c in self.stub.calls], ["halt_status", "decide"])
+
+    def test_dry_runs_skip_the_halt_check(self):
+        self.stub.halted = True
+        out = self.call("save_playbook_layout_only", {"playbook_id": 7}, principal=_principal("agent", "a1"))
+        self.assertEqual(out, "ran:save_playbook_layout_only")
+        self.assertEqual(self.stub.calls, [])
+
+    def test_halt_is_audited(self):
+        self.stub.halted = True
+        with self.assertLogs("soar_mcp.policy", level="WARNING") as cm:
+            self.call("add_case_note", {"case_id": 1, "note": "n", "agent_context": AGENT_CTX},
+                      principal=_principal("agent", "a1"))
+        self.assertIn("refused=HALTED tool=add_case_note", "\n".join(cm.output))
+        self.assertIn("agent_id=a1", "\n".join(cm.output))
+
+
 class ClientCacheTest(unittest.TestCase):
     def setUp(self):
         sg.set_policy_client_override(None)
