@@ -35,6 +35,7 @@ from typing import Any, Callable, Optional
 
 from policy.agent_context import describe_agent_context_error, validate_agent_context
 from policy.client import PolicyClient, PolicyClientError, PolicyDecision, build_policy_client
+from policy.held_actions import HeldAction, HeldActionStore
 
 logger = logging.getLogger("soar_mcp.policy")
 
@@ -61,6 +62,25 @@ def set_policy_client_override(client: Optional[PolicyClient]) -> None:
     """Tests and local development: use this client instead of the HTTP one."""
     global _client_override
     _client_override = client
+
+
+_held_store: Optional[HeldActionStore] = None
+_held_store_override: Optional[HeldActionStore] = None
+
+
+def set_held_store_override(store: Optional[HeldActionStore]) -> None:
+    """Tests: use this store (e.g. in a temp dir) instead of local/held_actions.json."""
+    global _held_store_override
+    _held_store_override = store
+
+
+def get_held_store() -> HeldActionStore:
+    global _held_store
+    if _held_store_override is not None:
+        return _held_store_override
+    if _held_store is None:
+        _held_store = HeldActionStore()
+    return _held_store
 
 
 def _get_client(config: Any) -> Optional[PolicyClient]:
@@ -263,13 +283,43 @@ def decide_write_tool(
         return (f"⛔ Blocked by policy (DENY{code_txt}): entscheidung_id={decision.entscheidung_id}."
                 + (f" Reason: {summary}" if summary else ""))
     needed = decision.freigaben_noetig or (2 if decision.gate == "APPROVE_2PERSON" else 1)
-    return (
+    held = HeldAction.build(
+        decision.freigabe_id or "", tool_name, args, request,
+        entscheidung_id=decision.entscheidung_id, gate=decision.gate, noetig=needed,
+        initiator=principal_identity(principal),
+        principal_type=getattr(principal, "principal_type", None) or "mensch",
+        ablauf=decision.ablauf,
+    )
+    try:
+        get_held_store().put(held)
+        stored = True
+    except Exception as exc:  # noqa: BLE001 — the hold stands; only redemption is affected
+        logger.error("[soar_mcp.policy] service held action not stored freigabe_id=%s: %s",
+                     decision.freigabe_id, type(exc).__name__)
+        stored = False
+    return hold_message(decision, tool_name, needed, summary, stored=stored)
+
+
+def hold_message(decision: PolicyDecision, tool_name: str, needed: int, summary: str = "", *,
+                 stored: bool = True) -> str:
+    fid = decision.freigabe_id
+    text = (
         f"⏸ Approval required by policy — {needed} distinct approver(s) ({decision.gate}).\n"
-        f"  entscheidung_id={decision.entscheidung_id}  freigabe_id={decision.freigabe_id}"
+        f"  entscheidung_id={decision.entscheidung_id}  freigabe_id={fid}"
         + (f"  ablauf={decision.ablauf}" if decision.ablauf else "") + "\n"
         + (f"  Reason: {summary}\n" if summary else "")
-        + "  Approval redemption (approve_action / consume) is not available yet in this "
-          "version; the request is held and will NOT execute now."
+        + "  Nothing has been executed.\n"
+    )
+    if not stored:
+        return text + ("  The held action could not be stored on the SOAR host; the approval cannot "
+                       "be redeemed. Fix the app's local/ directory and request the action again.")
+    two = "each of the required approvers" if needed >= 2 else "one approver"
+    return text + (
+        f"  Next: {two} (a human with a scoped MCP token, never the requester) calls\n"
+        f'  approve_action(freigabe_id="{fid}"). The call that completes the approval redeems it\n'
+        f"  (consume) and executes the held {tool_name}.\n"
+        f'  Alternative: call {tool_name} again with the same arguments plus freigabe_id="{fid}"\n'
+        "  once all approvals are in; it is redeemed and executed the same way."
     )
 
 

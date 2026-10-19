@@ -6,10 +6,13 @@ All tests run against StubPolicyClient — no network, no Policy Manager.
 
 from __future__ import annotations
 
+import os
+import tempfile
 import unittest
 from unittest.mock import patch
 
 import policy.service_gate as sg
+from policy.held_actions import HeldActionStore
 from policy.client import PolicyClientError, PolicyDecision, StubPolicyClient
 from soar_mcp_config import ALL_TOOLS, READ_ONLY_TOOLS, McpServerConfig
 from soar_mcp_tokens import Principal, TokenVerification
@@ -66,6 +69,11 @@ class _Base(unittest.TestCase):
         self.stub = StubPolicyClient()
         sg.set_policy_client_override(self.stub)
         self.addCleanup(sg.set_policy_client_override, None)
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.held = HeldActionStore(os.path.join(self.tmp.name, "held_actions.json"))
+        sg.set_held_store_override(self.held)
+        self.addCleanup(sg.set_held_store_override, None)
         self.client = _FakeClient()
         self._hp = patch.dict("soar_mcp_tools._TOOL_HANDLERS", _HANDLER_PATCH)
         self._hp.start()
@@ -141,8 +149,37 @@ class DecideFlowTest(_Base):
                                             ablauf="2026-10-19T10:00:00+02:00")
         out = self.call("delete_container", {"container_id": 5, "confirm": True})
         self.assertTrue(out.startswith("⏸"))
-        for needle in ("2 distinct approver", "freigabe_id=ap-5521", "entscheidung_id=pm-10", "ablauf=2026-10-19"):
+        for needle in ("2 distinct approver", "freigabe_id=ap-5521", "entscheidung_id=pm-10", "ablauf=2026-10-19",
+                       'approve_action(freigabe_id="ap-5521")', 'delete_container again', "Nothing has been executed"):
             self.assertIn(needle, out)
+        self.assertNotIn("ran:", out)
+
+    def test_hold_remembers_the_action_for_redemption(self):
+        """Phase 3.2 (OQ-16): the held action is stored under the freigabe_id."""
+        self.stub.decision = PolicyDecision(entscheidung_id="pm-10", gate="APPROVE_2PERSON",
+                                            freigaben_noetig=2, freigabe_id="ap-5521",
+                                            ablauf="2099-01-01T00:00:00Z")
+        self.call("add_case_note", {"case_id": 5, "note": "n", "confirm_token": "x"})
+        held = self.held.get("ap-5521")
+        self.assertIsNotNone(held)
+        self.assertEqual((held.tool, held.args, held.entscheidung_id, held.gate, held.noetig, held.initiator,
+                          held.principal_type),
+                         ("add_case_note", {"case_id": 5, "note": "n"}, "pm-10", "APPROVE_2PERSON", 2, "alice",
+                          "mensch"))
+        self.assertEqual(held.request, self.stub.calls[-1][1])
+        self.assertGreater(held.expires_at, 4_000_000_000)
+        # ALLOW and DENY never leave a held action behind.
+        self.stub.decision = PolicyDecision(entscheidung_id="pm-11", gate="DENY")
+        self.call("add_case_note", {"case_id": 6, "note": "n"})
+        self.assertEqual(self.held.count(), 1)
+
+    def test_hold_store_failure_is_reported_but_never_executes(self):
+        self.stub.decision = PolicyDecision(entscheidung_id="pm-10", gate="APPROVE_1CLICK", freigabe_id="ap-1")
+        with patch.object(self.held, "put", side_effect=OSError("disk full")):
+            out = self.call("add_case_note", {"case_id": 5, "note": "n"})
+        self.assertTrue(out.startswith("⏸"))
+        self.assertIn("could not be stored", out)
+        self.assertNotIn("approve_action(", out)
         self.assertNotIn("ran:", out)
 
     def test_one_click_defaults_to_one_approver(self):
