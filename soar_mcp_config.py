@@ -211,6 +211,25 @@ class McpServerConfig:
     # APPROVE_2PERSON / DENY) before dispatch. Default off = backwards-compatible.
     policy_enabled: bool = False
 
+    # Policy Manager connection (SPEC-MCP MCP-G03). policy_mode selects the
+    # decision path for write tools:
+    #   ""        (empty, default) -> today's path: the in-app policy layer gates
+    #                                 run_playbook only, governed by policy_enabled
+    #   "service"                  -> every write tool is decided by the external
+    #                                 Policy Manager (/v1/decide), fail-closed
+    #   anything else ("embedded" is reserved until the policy_core wheel exists)
+    #                              -> invalid: every write tool is refused
+    # The transition rule (empty = today's behaviour) is deliberate so existing
+    # installations keep working after the upgrade (concept OQ-8).
+    policy_mode: str = ""
+    policy_service_url: str = ""
+    policy_timeout_s: float = 5.0
+    # mTLS material for the service mode: file PATHS only, never contents. The
+    # files are read by the policy client, never by the config loader.
+    policy_client_cert: str = ""
+    policy_client_key: str = ""
+    policy_ca: str = ""
+
     # Custom Function draft-write allowlist (#159). Repository (scm_id) values that
     # create/update_custom_function_draft may write to. EMPTY = no write allowed at
     # all — fail-safe by design: the S1 probe showed 'local' is scm_id 2 while
@@ -261,6 +280,8 @@ class McpServerConfig:
             "max_items_per_case": self.max_items_per_case,
             "write_tools_enabled": self.write_tools_enabled,
             "agent_read_exceptions": sorted(self.agent_read_exceptions),
+            "policy_mode": policy_effective_mode(self),
+            "policy_service_url_configured": bool(self.policy_service_url),
             "advisory_disclaimer": self.advisory_disclaimer,
             "log_tool_calls": self.log_tool_calls,
             "protocol_version": self.protocol_version,
@@ -272,6 +293,31 @@ class McpServerConfig:
             "min_severity": self.min_severity,
             "ai_instructions": self.ai_instructions,
         }
+
+
+# Effective policy modes (SPEC-MCP MCP-G03 + concept OQ-8 transition rule).
+POLICY_MODE_LEGACY = "legacy"    # policy_mode empty: in-app layer, run_playbook only
+POLICY_MODE_SERVICE = "service"  # external Policy Manager decides every write tool
+POLICY_MODE_INVALID = "invalid"  # unknown/reserved value or service without URL
+POLICY_TIMEOUT_DEFAULT_S = 5.0
+POLICY_TIMEOUT_MIN_S = 0.5
+POLICY_TIMEOUT_MAX_S = 120.0
+
+
+def policy_effective_mode(config: "McpServerConfig") -> str:
+    """Translate the configured policy_mode into the effective mode.
+
+    "" -> legacy (today's behaviour), "service" with a URL -> service, anything
+    else -> invalid. Callers treat invalid as fail-closed for write tools; this
+    helper itself never raises so a bad value can never crash the server.
+    """
+    raw = str(getattr(config, "policy_mode", "") or "").strip().lower()
+    if raw == "":
+        return POLICY_MODE_LEGACY
+    if raw == POLICY_MODE_SERVICE:
+        url = str(getattr(config, "policy_service_url", "") or "").strip()
+        return POLICY_MODE_SERVICE if url else POLICY_MODE_INVALID
+    return POLICY_MODE_INVALID
 
 
 def build_posture_report(config: "McpServerConfig") -> dict:
@@ -319,6 +365,13 @@ def build_posture_report(config: "McpServerConfig") -> dict:
     agent_read_exceptions = sorted(getattr(config, "agent_read_exceptions", []) or [])
     if agent_read_exceptions:
         risk_flags.append("agent_read_exceptions_set")
+    # SPEC-MCP MCP-G03: an unusable policy_mode refuses every write tool
+    # (fail-closed). Surface it so the operator sees why writes are blocked.
+    effective_policy_mode = policy_effective_mode(config)
+    if effective_policy_mode == POLICY_MODE_INVALID:
+        risk_flags.append("policy_mode_invalid")
+    policy_mtls_configured = bool(
+        config.policy_client_cert and config.policy_client_key and config.policy_ca)
 
     return {
         "write_tools_enabled": config.write_tools_enabled,
@@ -327,6 +380,9 @@ def build_posture_report(config: "McpServerConfig") -> dict:
         "enable_test_harness": config.enable_test_harness,
         "require_confirmation": config.require_confirmation,
         "policy_enabled": config.policy_enabled,
+        "policy_mode": effective_policy_mode,
+        "policy_service_url_configured": bool(config.policy_service_url),
+        "policy_mtls_configured": policy_mtls_configured,
         "agent_read_exceptions": agent_read_exceptions,
         "scoped_tokens_enabled": config.scoped_tokens_enabled,
         "scoped_tokens_required": config.scoped_tokens_required,
@@ -420,6 +476,14 @@ class McpConfigLoader:
         config.enable_test_harness = self._get_bool(parser, "safety", "enable_test_harness", False)
         config.require_confirmation = self._get_bool(parser, "safety", "require_confirmation", False)
         config.policy_enabled = self._get_bool(parser, "policy", "enabled", False)
+        config.policy_mode = parser.get("policy", "mode", fallback="").strip().lower()
+        config.policy_service_url = parser.get("policy", "service_url", fallback="").strip()
+        config.policy_timeout_s = self._get_float(
+            parser, "policy", "timeout_s", POLICY_TIMEOUT_DEFAULT_S,
+            min_val=POLICY_TIMEOUT_MIN_S, max_val=POLICY_TIMEOUT_MAX_S)
+        config.policy_client_cert = parser.get("policy", "client_cert", fallback="").strip()
+        config.policy_client_key = parser.get("policy", "client_key", fallback="").strip()
+        config.policy_ca = parser.get("policy", "ca", fallback="").strip()
         config.custom_function_write_scm_ids = self._parse_scm_ids(
             parser.get("custom_functions", "allowed_write_scm_ids", fallback=""))
         config.agent_read_exceptions = self._parse_agent_read_exceptions(
@@ -512,6 +576,21 @@ class McpConfigLoader:
         pol = overrides.get("policy_enabled")
         if pol is not None:
             config.policy_enabled = bool(pol)
+
+        # Policy Manager connection (MCP-G03). None = not set in the asset config
+        # -> keep the mcp.conf [policy] value. Empty string = explicitly unset
+        # (policy_mode "" = today's path). Values are paths/URLs, never secrets.
+        for key in ("policy_mode", "policy_service_url", "policy_client_cert",
+                    "policy_client_key", "policy_ca"):
+            val = overrides.get(key)
+            if val is not None:
+                setattr(config, key, str(val).strip().lower() if key == "policy_mode"
+                        else str(val).strip())
+        timeout = overrides.get("policy_timeout_s")
+        if timeout is not None and str(timeout).strip() != "":
+            config.policy_timeout_s = self._clamp_float(
+                timeout, POLICY_TIMEOUT_DEFAULT_S,
+                min_val=POLICY_TIMEOUT_MIN_S, max_val=POLICY_TIMEOUT_MAX_S)
 
         # Custom Function write allowlist (#159). None = not set in the asset config
         # -> keep the mcp.conf value. The UI field is the intended way to grant this.
@@ -613,6 +692,15 @@ class McpConfigLoader:
             return max(min_val, min(val, max_val))
         except (ValueError, TypeError):
             return default
+
+    @staticmethod
+    def _clamp_float(raw: object, default: float, *, min_val: float, max_val: float) -> float:
+        """Parse an override value as float within [min_val, max_val]; default on junk."""
+        try:
+            val = float(raw)  # type: ignore[arg-type]
+        except (ValueError, TypeError):
+            return default
+        return max(min_val, min(val, max_val))
 
     @staticmethod
     def _get_int(

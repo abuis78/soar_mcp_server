@@ -249,6 +249,43 @@
             "required": false,
             "order": 43
         },
+        "policy_mode": {
+            "description": "Policy Manager mode (SPEC-MCP MCP-G03). EMPTY (default) = today's behaviour: the in-app policy layer gates run_playbook only, governed by 'policy_enabled'. 'service' = EVERY write tool is decided by the external Policy Manager (/v1/decide) before execution, fail-closed: if the service is unreachable, times out or refuses, nothing is executed. Any other value (including the reserved 'embedded') is invalid and blocks every write tool. Read tools are never affected.",
+            "data_type": "string",
+            "required": false,
+            "order": 44
+        },
+        "policy_service_url": {
+            "description": "Policy Manager base URL for policy_mode = service, e.g. https://policy-manager.mgmt.local:8443 (no trailing /v1). Required in service mode; service mode without a URL is invalid (all write tools blocked).",
+            "data_type": "string",
+            "required": false,
+            "order": 45
+        },
+        "policy_timeout_s": {
+            "description": "Policy Manager request timeout in seconds (service mode). On timeout the write tool is refused (fail-closed, no fallback to the in-app layer). Range 0.5-120. Default 5.",
+            "data_type": "numeric",
+            "default": 5,
+            "required": false,
+            "order": 46
+        },
+        "policy_client_cert": {
+            "description": "Path (on the SOAR host) to this app's client certificate (PEM) for mTLS to the Policy Manager. Path only; the file is read at call time, never stored or logged.",
+            "data_type": "string",
+            "required": false,
+            "order": 47
+        },
+        "policy_client_key": {
+            "description": "Path (on the SOAR host) to the private key (PEM) belonging to policy_client_cert. Path only; keep the file readable by the SOAR service user only.",
+            "data_type": "string",
+            "required": false,
+            "order": 48
+        },
+        "policy_ca": {
+            "description": "Path (on the SOAR host) to the CA bundle (PEM) that signs the Policy Manager's server certificate. Path only.",
+            "data_type": "string",
+            "required": false,
+            "order": 49
+        },
         "tool_list_apps": {
             "description": "READ \u2014 list_apps: List installed SOAR apps/connectors (name, vendor, supported actions). Used by the playbook-builder skill for connector discovery.",
             "data_type": "boolean",

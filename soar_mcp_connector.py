@@ -175,6 +175,20 @@ class SoarMcpConnector(BaseConnector):
         are_val = asset_cfg.get("agent_read_exceptions")
         agent_read_exceptions = str(are_val).strip() if are_val is not None else None
 
+        # Policy Manager connection (SPEC-MCP MCP-G03). Strings are paths/URLs,
+        # never secrets. None = not set in the asset config -> mcp.conf [policy].
+        # Empty string is meaningful for policy_mode ("" = today's path).
+        policy_conn = {}
+        for key in ("policy_mode", "policy_service_url", "policy_client_cert",
+                    "policy_client_key", "policy_ca"):
+            val = asset_cfg.get(key)
+            policy_conn[key] = str(val).strip() if val is not None else None
+        timeout_val = asset_cfg.get("policy_timeout_s")
+        try:
+            policy_timeout_s = float(timeout_val) if timeout_val not in (None, "") else None
+        except (TypeError, ValueError):
+            policy_timeout_s = None
+
         ssl_val = asset_cfg.get("ssl_verify")
         ssl_verify = bool(ssl_val) if ssl_val is not None else None
 
@@ -196,6 +210,12 @@ class SoarMcpConnector(BaseConnector):
             "policy_enabled": policy_enabled,
             "custom_function_write_scm_ids": cf_write_scm_ids,
             "agent_read_exceptions": agent_read_exceptions,
+            "policy_mode": policy_conn["policy_mode"],
+            "policy_service_url": policy_conn["policy_service_url"],
+            "policy_timeout_s": policy_timeout_s,
+            "policy_client_cert": policy_conn["policy_client_cert"],
+            "policy_client_key": policy_conn["policy_client_key"],
+            "policy_ca": policy_conn["policy_ca"],
             "ssl_verify": ssl_verify,
             "asset_name": self._asset_name,
             "base_url": self._base_url,
