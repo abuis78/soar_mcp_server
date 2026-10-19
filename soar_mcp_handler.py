@@ -30,7 +30,7 @@ _app_dir = os.path.dirname(os.path.abspath(__file__))
 if _app_dir not in sys.path:
     sys.path.insert(0, _app_dir)
 
-from soar_mcp_config import McpServerConfig, get_config
+from soar_mcp_config import READ_ONLY_TOOLS, McpServerConfig, get_config
 from soar_mcp_tools import TOOL_SCHEMAS, SoarApiClient, call_tool
 from soar_mcp_utils import redact_nested
 
@@ -315,6 +315,25 @@ class SoarMcpRestHandler(dict):
     # still honoured by _handle_tools_call for anyone who already knows the name.
     _HIDDEN_FROM_LIST = frozenset({"save_playbook_layout_only"})
 
+    @staticmethod
+    def _agent_read_blocked(tool_name: str, config: McpServerConfig,
+                            token_verification=None) -> bool:
+        """SPEC-MCP MCP-L01/L02: an 'agent' principal gets no direct read tools.
+
+        True when the caller is an agent-principal scoped token AND tool_name is
+        a read-only tool that is not on the admin-justified exception list
+        (config.agent_read_exceptions). Single source of truth for tools/list
+        (hide) and tools/call (reject) so the two can never disagree. Humans,
+        brokers and the legacy full-token path are never blocked here.
+        """
+        if token_verification is None:
+            return False
+        if getattr(token_verification, "principal_type", "mensch") != "agent":
+            return False
+        if tool_name not in READ_ONLY_TOOLS:
+            return False
+        return tool_name not in set(getattr(config, "agent_read_exceptions", []) or [])
+
     def _handle_tools_list(self, config: McpServerConfig,
                            token_verification=None) -> dict:
         # Scoped token allow-list intersects with asset-config enabled tools.
@@ -327,6 +346,7 @@ class SoarMcpRestHandler(dict):
              "inputSchema": schema["inputSchema"]}
             for name, schema in TOOL_SCHEMAS.items()
             if name in allowed and name not in self._HIDDEN_FROM_LIST
+            and not self._agent_read_blocked(name, config, token_verification)
         ]
         logger.info("[SOAR MCP] tools/list → %d tools", len(tools))
         return {"tools": tools}
@@ -364,13 +384,46 @@ class SoarMcpRestHandler(dict):
                                   outcome="denied:scoped")
             return {"content": [{"type": "text", "text": text}], "isError": True}
 
-        self._audit_tool_call(token_verification, tool_name, arguments, outcome="ok")
+        # SPEC-MCP MCP-L01/L02: agent-principal tokens get no direct read tools.
+        # Same predicate as tools/list, so hidden == rejected. An admin-listed
+        # exception (agent_read_exceptions) proceeds but is marked in the audit.
+        outcome = "ok"
+        if self._agent_read_blocked(tool_name, config, token_verification):
+            agent_id = getattr(token_verification, "agent_id", None) or "-"
+            text = (f"\u26d4 USE_TOOL_BROKER \u2014 Tool '{tool_name}' is a direct SOAR read tool "
+                    f"and is not available to agent tokens. Read SOAR data through the "
+                    f"Tool Broker template for this need (agent_id={agent_id}).")
+            self._audit_tool_call(token_verification, tool_name, arguments,
+                                  outcome="denied:use_tool_broker")
+            return {"content": [{"type": "text", "text": text}], "isError": True}
+        if (token_verification is not None
+                and getattr(token_verification, "principal_type", "mensch") == "agent"
+                and tool_name in READ_ONLY_TOOLS):
+            outcome = "ok:agent_read_exception"
+
+        self._audit_tool_call(token_verification, tool_name, arguments, outcome=outcome)
         # Scoped-token identity is the accountable approver for the policy layer
         # (#138); legacy full tokens have no bound user -> None (fail-safe HOLD).
         actor_id = token_verification.soar_user_id if token_verification is not None else None
         result_text = call_tool(tool_name, arguments, client, config, actor_id=actor_id)
         is_error = self._is_tool_error(result_text)
+        self._audit_tool_result(token_verification, tool_name, arguments,
+                                result=self._classify_result(result_text, is_error))
         return {"content": [{"type": "text", "text": result_text}], "isError": is_error}
+
+    @staticmethod
+    def _classify_result(result_text: str, is_error: bool) -> str:
+        """Audit classification of a tool result (SPEC-MCP MCP-G05).
+
+        policy_blocked (⛔) and policy_hold (⏸) are the policy gate's own
+        markers; everything else is ok / error from _is_tool_error.
+        """
+        head = (result_text or "").lstrip()[:4]
+        if head.startswith("\u26d4"):
+            return "policy_blocked"
+        if head.startswith("\u23f8"):
+            return "policy_hold"
+        return "error" if is_error else "ok"
 
     @staticmethod
     def _is_tool_error(result_text: str) -> bool:
@@ -390,13 +443,45 @@ class SoarMcpRestHandler(dict):
     def _audit_tool_call(token_verification, tool_name: str,
                          arguments: dict, *, outcome: str) -> None:
         """Emit a structured audit line. Never logs the token itself."""
-        token_id = getattr(token_verification, "token_id", None) if token_verification else None
-        label = getattr(token_verification, "label", None) if token_verification else None
         audit_logger.info(
-            "[SOAR MCP] tool_call outcome=%s tool=%s token_id=%s label=%s args=%s",
-            outcome, tool_name, token_id or "legacy", label or "-",
+            "[SOAR MCP] tool_call outcome=%s tool=%s %s args=%s",
+            outcome, tool_name,
+            SoarMcpRestHandler._audit_identity(token_verification, arguments),
             json.dumps(sanitise_args_for_audit(arguments), default=str)[:500],
         )
+
+    @staticmethod
+    def _audit_tool_result(token_verification, tool_name: str,
+                           arguments: dict, *, result: str) -> None:
+        """Second audit line, AFTER the tool ran (SPEC-MCP MCP-G05): what came
+        back — ok / error / policy_blocked / policy_hold. Decision and approval
+        ids (entscheidung_id / freigabe_id) will be appended here in Phase 2."""
+        audit_logger.info(
+            "[SOAR MCP] tool_result result=%s tool=%s %s",
+            result, tool_name,
+            SoarMcpRestHandler._audit_identity(token_verification, arguments),
+        )
+
+    @staticmethod
+    def _audit_identity(token_verification, arguments: dict) -> str:
+        """Caller identity fields shared by both audit lines (MCP-G05):
+        principal (mensch|agent|broker|legacy), token_id, label, agent_id, plus
+        lauf_id / broker_aufruf_id when the caller passed them as top-level
+        arguments (Phase 1: logged only, not enforced). Never the token value."""
+        tv = token_verification
+        token_id = getattr(tv, "token_id", None) if tv else None
+        label = getattr(tv, "label", None) if tv else None
+        principal = (getattr(tv, "principal_type", None) or "mensch") if tv else "legacy"
+        agent_id = getattr(tv, "agent_id", None) if tv else None
+        args = arguments if isinstance(arguments, dict) else {}
+
+        def _s(v: object) -> str:
+            v = str(v).strip() if v is not None else ""
+            return v[:64] if v else "-"
+
+        return (f"principal={principal} token_id={token_id or 'legacy'} label={label or '-'} "
+                f"agent_id={_s(agent_id)} lauf_id={_s(args.get('lauf_id'))} "
+                f"broker_aufruf_id={_s(args.get('broker_aufruf_id'))}")
 
     # ── Helpers ────────────────────────────────────────────────────────────────
 

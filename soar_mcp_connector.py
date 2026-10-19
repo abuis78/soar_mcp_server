@@ -31,9 +31,10 @@ from soar_mcp_config import (
 from soar_mcp_handler import build_mcp_endpoint
 
 try:
-    from soar_mcp_tokens import TokenStore
+    from soar_mcp_tokens import TokenStore, normalise_principal
 except Exception:  # noqa: BLE001
     TokenStore = None  # type: ignore[misc,assignment]
+    normalise_principal = None  # type: ignore[assignment]
 
 
 class SoarMcpConnector(BaseConnector):
@@ -169,6 +170,11 @@ class SoarMcpConnector(BaseConnector):
         cf_ids_val = asset_cfg.get("custom_function_write_scm_ids")
         cf_write_scm_ids = str(cf_ids_val).strip() if cf_ids_val is not None else None
 
+        # Agent read exceptions (SPEC-MCP MCP-L02). Same semantics: empty string
+        # = explicitly none; None = fall back to mcp.conf [policy].
+        are_val = asset_cfg.get("agent_read_exceptions")
+        agent_read_exceptions = str(are_val).strip() if are_val is not None else None
+
         ssl_val = asset_cfg.get("ssl_verify")
         ssl_verify = bool(ssl_val) if ssl_val is not None else None
 
@@ -189,6 +195,7 @@ class SoarMcpConnector(BaseConnector):
             "enable_test_harness": enable_test_harness,
             "policy_enabled": policy_enabled,
             "custom_function_write_scm_ids": cf_write_scm_ids,
+            "agent_read_exceptions": agent_read_exceptions,
             "ssl_verify": ssl_verify,
             "asset_name": self._asset_name,
             "base_url": self._base_url,
@@ -342,6 +349,14 @@ class SoarMcpConnector(BaseConnector):
         except (TypeError, ValueError):
             lifetime_days = 90
 
+        # Principal kind (SPEC-MCP, MCP-G01). Validate up front so an operator
+        # gets a precise message instead of the generic "Mint failed".
+        try:
+            principal_type, agent_id = normalise_principal(
+                param.get("principal_type"), param.get("agent_id"))
+        except ValueError as exc:
+            return action_result.set_status(phantom.APP_ERROR, str(exc))
+
         if not label:
             return action_result.set_status(phantom.APP_ERROR, "label is required.")
         if not soar_user_id:
@@ -369,6 +384,8 @@ class SoarMcpConnector(BaseConnector):
                 soar_call_token=bound_token,
                 allowed_tools=allowed_tools,
                 lifetime_days=lifetime_days,
+                principal_type=principal_type,
+                agent_id=agent_id,
             )
         except Exception as exc:
             self.debug_print(f"[MCP] Mint failed: {exc}")
@@ -396,13 +413,16 @@ class SoarMcpConnector(BaseConnector):
             "expires_at": minted.expires_at,
             "allowed_tools": minted.allowed_tools,
             "soar_user_id": minted.soar_user_id,
+            "principal_type": minted.principal_type,
+            "agent_id": minted.agent_id,
             "mcp_endpoint": endpoint,
             "cursor_mcp_json_snippet": cursor_snippet,
         })
-        action_result.set_summary({"token_id": minted.id, "label": minted.label})
+        action_result.set_summary({"token_id": minted.id, "label": minted.label,
+                                   "principal_type": minted.principal_type})
         return action_result.set_status(
             phantom.APP_SUCCESS,
-            f"Minted MCP token {minted.id}. Copy the raw token now — it is shown only "
+            f"Minted MCP token {minted.id} ({minted.principal_type}). Copy the raw token now — it is shown only "
             f"this once and is NOT stored:\n\n{minted.raw_token}\n\n"
             f'Shell: export SOAR_MCP_TOKEN="{minted.raw_token}"')
 
@@ -424,6 +444,7 @@ class SoarMcpConnector(BaseConnector):
                 "allowed_tools": t.allowed_tools, "created_at": t.created_at,
                 "expires_at": t.expires_at, "last_used_at": t.last_used_at,
                 "revoked_at": t.revoked_at, "is_active": t.is_active,
+                "principal_type": t.principal_type, "agent_id": t.agent_id,
             })
         action_result.set_summary({"token_count": len(tokens)})
         return action_result.set_status(

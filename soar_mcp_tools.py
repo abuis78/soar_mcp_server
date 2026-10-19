@@ -4132,6 +4132,16 @@ TOOL_SCHEMAS["generate_mcp_client_config"] = {
     "inputSchema": {"type": "object", "properties": {}},
 }
 
+def _count_tokens_by_principal() -> dict:
+    """Active scoped tokens per principal_type (MCP-G06). Counts only."""
+    from soar_mcp_tokens import PRINCIPAL_TYPES, TokenStore
+    counts = {p: 0 for p in sorted(PRINCIPAL_TYPES)}
+    for t in TokenStore.default().list():
+        if t.is_active:
+            counts[t.principal_type] = counts.get(t.principal_type, 0) + 1
+    return counts
+
+
 def tool_diagnose_soar_mcp_environment(
     client: SoarApiClient, config: McpServerConfig, args: dict
 ) -> str:
@@ -4185,6 +4195,18 @@ def tool_diagnose_soar_mcp_environment(
         findings.append({"severity": "warn", "code": flag,
                          "message": f"Security posture: {flag}"})
 
+    # SPEC-MCP MCP-G06: active scoped tokens per principal_type. Counts only —
+    # never ids, labels or values. Best-effort: an unreadable store is a finding,
+    # not a crash; with scoped tokens disabled the field is null.
+    principal_counts = None
+    if getattr(config, "scoped_tokens_enabled", False):
+        try:
+            principal_counts = _count_tokens_by_principal()
+        except Exception as exc:
+            findings.append({"severity": "warn", "code": "token_store_unreadable",
+                             "message": f"Scoped token store could not be read: "
+                                        f"{type(exc).__name__}"})
+
     data = {
         "app_version": config.server_version,
         "mcp_endpoint": endpoint,
@@ -4193,6 +4215,7 @@ def tool_diagnose_soar_mcp_environment(
         "soar_version": soar_version,
         "enabled_tool_count": len(config.enabled_tools),
         "security_posture": posture,
+        "principal_counts": principal_counts,
     }
     ok = auth_present and handler_reachable and not any(
         f.get("severity") == "error" for f in findings

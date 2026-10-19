@@ -8,8 +8,8 @@
     "product_version_regex": ".*",
     "publisher": "Andreas Buis",
     "license": "Copyright 2026 Andreas Buis",
-    "app_version": "1.14.0",
-    "utctime_updated": "2026-07-16T22:00:00.000000Z",
+    "app_version": "1.15.0",
+    "utctime_updated": "2026-10-18T12:00:00.000000Z",
     "package_name": "phantom_soar_mcp_server",
     "main_module": "soar_mcp_connector.py",
     "min_phantom_version": "8.5.0",
@@ -242,6 +242,12 @@
             "default": false,
             "required": false,
             "order": 42
+        },
+        "agent_read_exceptions": {
+            "description": "Agent read exceptions (SPEC-MCP MCP-L02). MCP tokens minted with principal_type 'agent' get NO direct read tools — agents read SOAR data only through Tool Broker templates. This comma-separated list names read-only tools an agent token may still call directly; every entry must be deliberately justified (document the reason in your change record). EMPTY = no exceptions (fail-safe default). Only read-only tool names are accepted; anything else is ignored. Example: get_soar_info",
+            "data_type": "string",
+            "required": false,
+            "order": 43
         },
         "tool_list_apps": {
             "description": "READ \u2014 list_apps: List installed SOAR apps/connectors (name, vendor, supported actions). Used by the playbook-builder skill for connector discovery.",
@@ -543,6 +549,20 @@
                     "default": 90,
                     "required": false,
                     "order": 4
+                },
+                "principal_type": {
+                    "description": "Kind of caller this token represents (SPEC-MCP MCP-G01): 'mensch' (human analyst, default), 'agent' (AI agent — gets no direct read tools, must use the Tool Broker), or 'broker' (Tool Broker adapter — read tools only).",
+                    "data_type": "string",
+                    "value_list": ["mensch", "agent", "broker"],
+                    "default": "mensch",
+                    "required": false,
+                    "order": 5
+                },
+                "agent_id": {
+                    "description": "Agent identifier (e.g. 'triage_agent'). Required when principal_type is 'agent'; ignored otherwise.",
+                    "data_type": "string",
+                    "required": false,
+                    "order": 6
                 }
             },
             "output": [
@@ -550,7 +570,9 @@
                 {"data_path": "action_result.message", "data_type": "string", "column_name": "Message", "column_order": 1},
                 {"data_path": "action_result.data.*.token_id", "data_type": "string", "contains": ["soar mcp token id"], "column_name": "Token ID", "column_order": 2},
                 {"data_path": "action_result.data.*.expires_at", "data_type": "numeric", "column_name": "Expires", "column_order": 4},
-                {"data_path": "action_result.data.*.cursor_mcp_json_snippet", "data_type": "string", "column_name": "Cursor mcp.json", "column_order": 5}
+                {"data_path": "action_result.data.*.cursor_mcp_json_snippet", "data_type": "string", "column_name": "Cursor mcp.json", "column_order": 5},
+                {"data_path": "action_result.data.*.principal_type", "data_type": "string", "column_name": "Principal", "column_order": 6},
+                {"data_path": "action_result.data.*.agent_id", "data_type": "string", "column_name": "Agent ID", "column_order": 7}
             ],
             "versions": "EQ(*)"
         },
@@ -575,7 +597,9 @@
                 {"data_path": "action_result.data.*.label", "data_type": "string", "column_name": "Label", "column_order": 2},
                 {"data_path": "action_result.data.*.soar_user_id", "data_type": "string", "contains": ["soar mcp user id"], "column_name": "Bound User", "column_order": 3},
                 {"data_path": "action_result.data.*.last_used_at", "data_type": "numeric", "column_name": "Last Used", "column_order": 4},
-                {"data_path": "action_result.data.*.is_active", "data_type": "boolean", "column_name": "Active", "column_order": 5}
+                {"data_path": "action_result.data.*.is_active", "data_type": "boolean", "column_name": "Active", "column_order": 5},
+                {"data_path": "action_result.data.*.principal_type", "data_type": "string", "column_name": "Principal", "column_order": 6},
+                {"data_path": "action_result.data.*.agent_id", "data_type": "string", "column_name": "Agent ID", "column_order": 7}
             ],
             "versions": "EQ(*)"
         },
