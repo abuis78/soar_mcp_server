@@ -23,6 +23,9 @@ import json
 import logging
 import os
 import re
+
+# SPEC-MCP MCP-L04: shape of broker context ids (same charset as freigabe_id).
+_CONTEXT_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 import sys
 
 # ── App directory on sys.path ──────────────────────────────────────────────────
@@ -341,6 +344,53 @@ class SoarMcpRestHandler(dict):
         return tool_name not in set(getattr(config, "agent_read_exceptions", []) or [])
 
     @staticmethod
+    def _broker_write_blocked(tool_name: str, token_verification=None) -> bool:
+        """SPEC-MCP MCP-L05 / AC-07 / concept OQ-14 (Phase 4.1): a broker token
+        reads only. Every tool outside READ_ONLY_TOOLS (write and approval
+        tools) is hidden from tools/list and refused on tools/call, even when
+        allowed_tools names it. One predicate for both, so hidden == refused."""
+        if token_verification is None or tool_name in READ_ONLY_TOOLS:
+            return False
+        return getattr(token_verification, "principal_type", "mensch") == "broker"
+
+    @staticmethod
+    def _is_broker(token_verification=None) -> bool:
+        return (token_verification is not None
+                and getattr(token_verification, "principal_type", "mensch") == "broker")
+
+    @staticmethod
+    def _broker_context_problem(arguments: dict) -> str:
+        """MCP-L04: '' when the broker context is usable, else the refusal text.
+        broker_aufruf_id is required (1-128 chars of [A-Za-z0-9._:-]); agent_id
+        and lauf_id are optional but, when given, must be strings of that shape."""
+        args = arguments if isinstance(arguments, dict) else {}
+        aufruf = args.get("broker_aufruf_id")
+        if not isinstance(aufruf, str) or not _CONTEXT_ID_RE.match(aufruf.strip()):
+            return ("broker_aufruf_id is required for broker tokens (MCP-L04): pass the Tool Broker's "
+                    "aufruf_id (1-128 characters, letters/digits/._:-) as a top-level argument. "
+                    "Optional context: agent_id, lauf_id.")
+        for key in ("agent_id", "lauf_id"):
+            val = args.get(key)
+            if val is not None and (not isinstance(val, str) or not _CONTEXT_ID_RE.match(val.strip())):
+                return f"{key} must be a string of 1-128 characters (letters/digits/._:-) when given (MCP-L04)."
+        return ""
+
+    @staticmethod
+    def _cap_broker_limit(arguments: dict, config: McpServerConfig) -> dict:
+        """MCP-L04: a broker never gets more than max_results per call. Tools
+        without a limit parameter are unaffected (see README)."""
+        cap = int(getattr(config, "max_results", 50) or 50)
+        limit = arguments.get("limit")
+        if isinstance(limit, bool) or not isinstance(limit, (int, float)):
+            return arguments
+        if int(limit) <= cap:
+            return arguments
+        capped = dict(arguments)
+        capped["limit"] = cap
+        logger.info("[SOAR MCP] broker limit %s capped to max_results=%s", limit, cap)
+        return capped
+
+    @staticmethod
     def _human_only_blocked(tool_name: str, token_verification=None) -> bool:
         """SPEC-MCP MCP-W06 (Phase 3.4): gate tools (approve_action) are for
         humans. Agent and broker tokens neither see nor call them; one predicate
@@ -364,6 +414,7 @@ class SoarMcpRestHandler(dict):
             if name in allowed and name not in self._HIDDEN_FROM_LIST
             and not self._agent_read_blocked(name, config, token_verification)
             and not self._human_only_blocked(name, token_verification)
+            and not self._broker_write_blocked(name, token_verification)
         ]
         logger.info("[SOAR MCP] tools/list → %d tools", len(tools))
         return {"tools": tools}
@@ -417,6 +468,12 @@ class SoarMcpRestHandler(dict):
                 and getattr(token_verification, "principal_type", "mensch") == "agent"
                 and tool_name in READ_ONLY_TOOLS):
             outcome = "ok:agent_read_exception"
+        if self._broker_write_blocked(tool_name, token_verification):
+            text = (f"\u26d4 Tool '{tool_name}' is not a read tool. Broker tokens (principal_type = broker) "
+                    "can only call tools from READ_ONLY_TOOLS, regardless of their allow-list (MCP-L05).")
+            self._audit_tool_call(token_verification, tool_name, arguments,
+                                  outcome="denied:broker_write")
+            return {"content": [{"type": "text", "text": text}], "isError": True}
         if self._human_only_blocked(tool_name, token_verification):
             text = (f"\u26d4 Tool '{tool_name}' is reserved for human analysts with a scoped MCP token "
                     f"(principal_type = mensch); {getattr(token_verification, 'principal_type', '-')} "
@@ -424,6 +481,16 @@ class SoarMcpRestHandler(dict):
             self._audit_tool_call(token_verification, tool_name, arguments,
                                   outcome="denied:human_only")
             return {"content": [{"type": "text", "text": text}], "isError": True}
+        # SPEC-MCP MCP-L04 (Phase 4.2): a broker call carries the broker's
+        # context — broker_aufruf_id is the audit evidence and mandatory;
+        # agent_id / lauf_id are optional. Results are capped at max_results.
+        if self._is_broker(token_verification):
+            problem = self._broker_context_problem(arguments)
+            if problem:
+                self._audit_tool_call(token_verification, tool_name, arguments,
+                                      outcome="denied:missing_broker_aufruf_id")
+                return {"content": [{"type": "text", "text": "\u26d4 " + problem}], "isError": True}
+            arguments = self._cap_broker_limit(arguments, config)
 
         self._audit_tool_call(token_verification, tool_name, arguments, outcome=outcome)
         # Scoped-token identity is the accountable approver for the policy layer
@@ -502,6 +569,9 @@ class SoarMcpRestHandler(dict):
         principal = (getattr(tv, "principal_type", None) or "mensch") if tv else "legacy"
         agent_id = getattr(tv, "agent_id", None) if tv else None
         args = arguments if isinstance(arguments, dict) else {}
+        if principal == "broker" and not agent_id:
+            # Phase 4.2 (MCP-L04): the broker names the agent it reads for.
+            agent_id = args.get("agent_id")
 
         def _s(v: object) -> str:
             v = str(v).strip() if v is not None else ""

@@ -407,9 +407,16 @@ class SoarMcpConnector(BaseConnector):
                 principal_type=principal_type,
                 agent_id=agent_id,
             )
+        except ValueError as exc:
+            # Precise operator feedback (e.g. broker token without read tools, MCP-L03).
+            return action_result.set_status(phantom.APP_ERROR, str(exc))
         except Exception as exc:
             self.debug_print(f"[MCP] Mint failed: {exc}")
             return action_result.set_status(phantom.APP_ERROR, "Mint failed — see debug log for details.")
+
+        # SPEC-MCP Phase 4.1: tools a broker asked for but cannot have (write/approval).
+        dropped_tools = [t for t in (allowed_tools or []) if t not in (minted.allowed_tools or [])]
+        dropped_note = (f" Not granted (brokers read only): {dropped_tools}." if dropped_tools else "")
 
         endpoint = build_mcp_endpoint(self._base_url or "", self._asset_name or "")
         cursor_snippet = json.dumps({
@@ -435,6 +442,7 @@ class SoarMcpConnector(BaseConnector):
             "soar_user_id": minted.soar_user_id,
             "principal_type": minted.principal_type,
             "agent_id": minted.agent_id,
+            "dropped_tools": dropped_tools,
             "mcp_endpoint": endpoint,
             "cursor_mcp_json_snippet": cursor_snippet,
         })
@@ -442,7 +450,7 @@ class SoarMcpConnector(BaseConnector):
                                    "principal_type": minted.principal_type})
         return action_result.set_status(
             phantom.APP_SUCCESS,
-            f"Minted MCP token {minted.id} ({minted.principal_type}). Copy the raw token now — it is shown only "
+            f"Minted MCP token {minted.id} ({minted.principal_type}).{dropped_note} Copy the raw token now — it is shown only "
             f"this once and is NOT stored:\n\n{minted.raw_token}\n\n"
             f'Shell: export SOAR_MCP_TOKEN="{minted.raw_token}"')
 

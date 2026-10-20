@@ -12,7 +12,7 @@ import time
 import unittest
 from pathlib import Path
 
-from soar_mcp_tokens import (PRINCIPAL_HUMAN, TokenStore, normalise_principal,
+from soar_mcp_tokens import (PRINCIPAL_HUMAN, TokenStore, broker_allowed_tools, normalise_principal,
                              sanitise_args_for_audit)
 from soar_mcp_config import McpServerConfig, ALL_TOOLS, READ_ONLY_TOOLS
 
@@ -138,10 +138,42 @@ class PrincipalTypeTest(unittest.TestCase):
         self.assertEqual((summary.principal_type, summary.agent_id), ("agent", "triage_agent"))
 
     def test_broker_round_trip_drops_agent_id(self):
-        m = self._mint(principal_type="broker", agent_id="ignored")
+        m = self._mint(principal_type="broker", agent_id="ignored", allowed_tools=["get_case"])
         v = self.store.verify(m.raw_token)
         self.assertEqual(v.principal_type, "broker")
         self.assertIsNone(v.agent_id)
+        self.assertEqual(v.allowed_tools, ["get_case"])
+
+    # --- SPEC-MCP Phase 4.1: broker tokens read only (MCP-L03/L05, AC-07) ----
+
+    def test_broker_allow_list_is_cut_to_read_tools(self):
+        m = self._mint(principal_type="broker",
+                       allowed_tools=["get_case", "run_playbook", "approve_action", "get_case", " list_cases "])
+        self.assertEqual(m.allowed_tools, ["get_case", "list_cases"])
+        v = self.store.verify(m.raw_token)
+        self.assertEqual(v.allowed_tools, ["get_case", "list_cases"])
+
+    def test_broker_without_read_tools_rejected(self):
+        for allowed in (None, [], ["run_playbook"], ["approve_action", "add_case_note"]):
+            with self.subTest(allowed=allowed):
+                with self.assertRaises(ValueError) as cm:
+                    self._mint(principal_type="broker", allowed_tools=allowed)
+                self.assertIn("broker", str(cm.exception))
+        self.assertEqual(self.store.list(), [])
+
+    def test_broker_allowed_tools_helper(self):
+        self.assertEqual(broker_allowed_tools(["list_cases", "add_case_note"]), ["list_cases"])
+        self.assertTrue(set(broker_allowed_tools(list(ALL_TOOLS))) <= READ_ONLY_TOOLS)
+        self.assertEqual(len(broker_allowed_tools(list(ALL_TOOLS))), len(READ_ONLY_TOOLS))
+        with self.assertRaises(ValueError):
+            broker_allowed_tools(["run_playbook"])
+
+    def test_humans_and_agents_keep_full_allow_lists(self):
+        m = self._mint(allowed_tools=["get_case", "run_playbook"])
+        self.assertEqual(m.allowed_tools, ["get_case", "run_playbook"])
+        m = self._mint(principal_type="agent", agent_id="a1", allowed_tools=["add_case_note"])
+        self.assertEqual(m.allowed_tools, ["add_case_note"])
+        self.assertIsNone(self._mint().allowed_tools)
 
     def test_type_is_case_insensitive(self):
         m = self._mint(principal_type=" Agent ", agent_id="a1")

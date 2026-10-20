@@ -4169,6 +4169,15 @@ def _count_tokens_by_principal() -> dict:
     return counts
 
 
+def _count_broker_tokens_without_allow_list() -> int:
+    """SPEC-MCP Phase 4.3: active broker tokens minted before 4.1 may carry no
+    allow-list and therefore reach every read tool (MCP-L03 wants the list
+    narrowed to what the broker needs). Count only, never ids."""
+    from soar_mcp_tokens import PRINCIPAL_BROKER, TokenStore
+    return sum(1 for t in TokenStore.default().list()
+               if t.is_active and t.principal_type == PRINCIPAL_BROKER and not t.allowed_tools)
+
+
 def tool_diagnose_soar_mcp_environment(
     client: SoarApiClient, config: McpServerConfig, args: dict
 ) -> str:
@@ -4229,6 +4238,13 @@ def tool_diagnose_soar_mcp_environment(
     if getattr(config, "scoped_tokens_enabled", False):
         try:
             principal_counts = _count_tokens_by_principal()
+            open_brokers = _count_broker_tokens_without_allow_list()
+            if open_brokers:
+                findings.append({"severity": "warn", "code": "broker_tokens_without_allow_list",
+                                 "message": (f"{open_brokers} active broker token(s) carry no allowed_tools "
+                                             "and can reach every read tool. Re-mint them with the read "
+                                             "tools the Tool Broker actually needs (MCP-L03) and revoke "
+                                             "the old ones.")})
         except Exception as exc:
             findings.append({"severity": "warn", "code": "token_store_unreadable",
                              "message": f"Scoped token store could not be read: "
@@ -5128,6 +5144,38 @@ def _attach_agent_context_schema() -> None:
 
 
 _attach_agent_context_schema()
+
+
+_BROKER_CONTEXT_SCHEMA = {
+    "broker_aufruf_id": {
+        "type": "string",
+        "description": ("Tool Broker call id (aufruf_id). REQUIRED for broker tokens (principal_type = broker, "
+                        "MCP-L04); audited as evidence. Optional for everyone else."),
+    },
+    "agent_id": {
+        "type": "string",
+        "description": "Agent the broker reads for (broker tokens; optional, audited).",
+    },
+    "lauf_id": {
+        "type": "string",
+        "description": "Agent run id the call belongs to (optional, audited).",
+    },
+}
+
+
+def _attach_broker_context_schema() -> None:
+    """SPEC-MCP Phase 4.2 (MCP-L04): the 33 read tools document the broker
+    context arguments. Existing properties are never overwritten."""
+    for _name in READ_ONLY_TOOLS:
+        _schema = TOOL_SCHEMAS.get(_name)
+        if not isinstance(_schema, dict):
+            continue
+        _props = _schema.setdefault("inputSchema", {}).setdefault("properties", {})
+        for _key, _prop in _BROKER_CONTEXT_SCHEMA.items():
+            _props.setdefault(_key, _prop)
+
+
+_attach_broker_context_schema()
 
 
 class _ConfirmStore:

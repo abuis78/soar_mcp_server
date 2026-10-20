@@ -80,6 +80,24 @@ PRINCIPAL_BROKER = "broker"
 PRINCIPAL_TYPES: frozenset[str] = frozenset({PRINCIPAL_HUMAN, PRINCIPAL_AGENT, PRINCIPAL_BROKER})
 
 
+def broker_allowed_tools(allowed_tools: Optional[Sequence[str]]) -> list[str]:
+    """SPEC-MCP MCP-L03/L05 (Phase 4.1): a broker token names the read tools it
+    actually needs. Anything outside READ_ONLY_TOOLS is dropped (write and gate
+    tools can never be granted to a broker); an empty result is an error.
+    Returns the kept list in the given order, without duplicates."""
+    from soar_mcp_config import READ_ONLY_TOOLS  # lazy: keep this module importable standalone
+
+    kept: list[str] = []
+    for name in list(allowed_tools or []):
+        name = str(name).strip()
+        if name in READ_ONLY_TOOLS and name not in kept:
+            kept.append(name)
+    if not kept:
+        raise ValueError("a broker token needs allowed_tools naming at least one read-only tool "
+                         "(write and approval tools are never granted to brokers)")
+    return kept
+
+
 def normalise_principal(principal_type: object, agent_id: object = None) -> tuple[str, Optional[str]]:
     """Validate (principal_type, agent_id) and return the canonical pair.
 
@@ -428,6 +446,8 @@ class TokenStore:
         expires_at: Optional[int]
         expires_at = now + int(lifetime_days) * 86400 if lifetime_days else None
         allowed_tools_list = list(allowed_tools) if allowed_tools else None
+        if ptype == PRINCIPAL_BROKER:
+            allowed_tools_list = broker_allowed_tools(allowed_tools)
 
         with self._lock:
             state = self._load()
