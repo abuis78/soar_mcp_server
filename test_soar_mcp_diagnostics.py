@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 from soar_mcp_config import READ_ONLY_TOOLS, McpServerConfig
@@ -98,7 +99,7 @@ class PrincipalCountsTest(unittest.TestCase):
         self.store.mint(label="a1", soar_user_id="svc", soar_call_token="ph_a1",
                         principal_type="agent", agent_id="triage")
         self.store.mint(label="b1", soar_user_id="svc", soar_call_token="ph_b1",
-                        principal_type="broker")
+                        principal_type="broker", allowed_tools=["get_case"])
         self.store.revoke(m.id)                       # revoked -> not counted
         cfg = _cfg(); cfg.scoped_tokens_enabled = True
         d, raw = self._diag(cfg)
@@ -106,6 +107,22 @@ class PrincipalCountsTest(unittest.TestCase):
                          {"agent": 1, "broker": 1, "mensch": 1})
         for leak in ("h1", "h2", "a1", "b1", "ph_", "tok_", "triage"):
             self.assertNotIn(leak, raw)
+
+    def test_broker_without_allow_list_is_warning(self):
+        """Phase 4.3: pre-4.1 broker tokens without allowed_tools are flagged (count only)."""
+        import soar_mcp_tokens as _tok
+        with patch.object(_tok, "broker_allowed_tools", side_effect=lambda a: list(a or [])):
+            self.store.mint(label="old-broker", soar_user_id="svc", soar_call_token="ph_ob",
+                            principal_type="broker")        # legacy entry: no allow-list
+        self.store.mint(label="new-broker", soar_user_id="svc", soar_call_token="ph_nb",
+                        principal_type="broker", allowed_tools=["get_case"])
+        cfg = _cfg(); cfg.scoped_tokens_enabled = True
+        d, raw = self._diag(cfg)
+        codes = {f["code"]: f for f in d.get("findings", [])}
+        self.assertIn("broker_tokens_without_allow_list", codes)
+        self.assertIn("1 active broker token", codes["broker_tokens_without_allow_list"]["message"])
+        self.assertNotIn("old-broker", raw)
+        self.assertNotIn("tok_", raw)
 
     def test_null_when_scoped_tokens_disabled(self):
         self.store.mint(label="h1", soar_user_id="h", soar_call_token="ph_h1")

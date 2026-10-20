@@ -58,10 +58,37 @@ class AgentReadGateListTest(unittest.TestCase):
         self.assertEqual(_names(cfg, _tv("mensch")), _names(cfg, None))
         self.assertTrue(READ_ONLY_TOOLS <= _names(cfg, _tv("mensch")))
 
-    def test_broker_sees_everything_but_gate_tools(self):
-        """Phase 1: brokers unchanged; Phase 3.4: the human-only approve_action is hidden."""
+    def test_broker_sees_read_tools_only(self):
+        """Phase 3.4 hid approve_action; Phase 4.1 (MCP-L05, OQ-14) hides every write tool."""
         cfg = _cfg()
-        self.assertEqual(_names(cfg, _tv("broker")), _names(cfg, None) - {"approve_action"})
+        names = _names(cfg, _tv("broker"))
+        self.assertEqual(names, _names(cfg, None) & READ_ONLY_TOOLS)
+        self.assertTrue(names)  # reads stay visible
+
+    def test_broker_allow_list_cannot_add_write_tools(self):
+        cfg = _cfg()
+        tv = _tv("broker", allowed_tools=["get_case", "run_playbook", "approve_action"])
+        self.assertEqual(_names(cfg, tv), {"get_case"})
+
+    def test_broker_write_call_refused_even_when_listed(self):
+        """AC-07: a broker token can read but never write."""
+        cfg = _cfg()
+        h = _handler()
+        tv = _tv("broker", allowed_tools=["get_case", "run_playbook", "approve_action"])
+        for tool in ("run_playbook", "approve_action"):  # both on the allow-list, still refused
+            with patch("soar_mcp_handler.call_tool") as ct, \
+                    patch.object(SoarMcpRestHandler, "_audit_tool_call") as audit:
+                res = h._handle_tools_call({"name": tool, "arguments": {"case_id": 1}}, object(), cfg, tv)
+            self.assertTrue(res.get("isError"), tool)
+            self.assertIn("read tool", res["content"][0]["text"])
+            ct.assert_not_called()
+            self.assertEqual(audit.call_args.kwargs.get("outcome"), "denied:broker_write")
+        with patch("soar_mcp_handler.call_tool", return_value="ok") as ct, \
+                patch.object(SoarMcpRestHandler, "_audit_tool_call"):
+            res = h._handle_tools_call({"name": "get_case", "arguments": {"case_id": 1, "broker_aufruf_id": "tb-1"}},
+                                       object(), cfg, tv)
+        self.assertFalse(res.get("isError"))
+        ct.assert_called_once()
 
     def test_legacy_token_unchanged(self):
         cfg = _cfg()
@@ -129,7 +156,10 @@ class AgentReadGateCallTest(unittest.TestCase):
     def test_human_broker_legacy_read_unchanged(self):
         for tv in (_tv("mensch"), _tv("broker"), None):
             with self.subTest(principal=getattr(tv, "principal_type", "legacy")):
-                result, ct = _call(_cfg(), tv, "get_case", {"case_id": 1})
+                args = {"case_id": 1}
+                if tv is not None and tv.principal_type == "broker":
+                    args["broker_aufruf_id"] = "tb-1"  # MCP-L04 (Phase 4.2)
+                result, ct = _call(_cfg(), tv, "get_case", args)
                 self.assertFalse(result["isError"])
                 ct.assert_called_once()
 

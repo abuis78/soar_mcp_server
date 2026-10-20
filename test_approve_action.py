@@ -221,7 +221,8 @@ class ApproveActionCatalogTest(unittest.TestCase):
                 res = h._handle_tools_call({"name": "approve_action", "arguments": {"freigabe_id": "ap-1"}},
                                            _FakeClient(), cfg, _tv(kind, "a1" if kind == "agent" else None))
             self.assertTrue(res.get("isError"), kind)
-            self.assertIn("human analysts", res["content"][0]["text"])
+            # agent: human-only predicate; broker: the read-only rule (Phase 4.1) fires first
+            self.assertIn("human analysts" if kind == "agent" else "read tool", res["content"][0]["text"])
             ct.assert_not_called()
         with patch("soar_mcp_handler.call_tool", return_value="fine") as ct:
             res = h._handle_tools_call({"name": "approve_action", "arguments": {"freigabe_id": "ap-1"}},
