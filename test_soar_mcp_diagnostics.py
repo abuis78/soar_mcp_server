@@ -10,6 +10,9 @@ from soar_mcp_config import READ_ONLY_TOOLS, McpServerConfig
 from soar_mcp_tokens import TokenStore
 from soar_mcp_tools import call_tool
 
+import policy.service_gate as _sg
+from policy.client import StubPolicyClient
+
 
 class _FakeClient:
     def __init__(self, auth="tok", version="6.3.0", fail=False, base_url="https://s/rest"):
@@ -127,6 +130,96 @@ class PrincipalCountsTest(unittest.TestCase):
         self.assertIn("agent_read_exceptions_set", d["data"]["security_posture"]["risk_flags"])
         d2, _ = self._diag(_cfg())
         self.assertNotIn("agent_read_exceptions_set", d2["data"]["security_posture"]["risk_flags"])
+
+
+
+class PolicyManagerDiagnosticsTest(unittest.TestCase):
+    """SPEC-MCP MCP-G06: policy_mode, Policy Manager reachability and halt state."""
+
+    def setUp(self) -> None:
+        self.addCleanup(_sg.set_policy_client_override, None)
+
+    def _diag(self, cfg):
+        out = call_tool("diagnose_soar_mcp_environment", {"output_format": "json"},
+                        _FakeClient(), cfg)
+        return json.loads(out)
+
+    def _service_cfg(self):
+        cfg = _cfg()
+        cfg.policy_mode = "service"
+        cfg.policy_service_url = "https://pm.local"
+        return cfg
+
+    def test_legacy_mode_reports_mode_only(self):
+        d = self._diag(_cfg())
+        pm = d["data"]["policy_manager"]
+        self.assertEqual(pm, {"mode": "legacy", "service_url_configured": False,
+                              "reachable": None, "halted": None, "error": None})
+        codes = {f["code"] for f in d["data"].get("findings", [])} | {f["code"] for f in d.get("findings", [])}
+        self.assertNotIn("policy_manager_unreachable", codes)
+
+    def test_invalid_mode_is_a_posture_finding(self):
+        cfg = _cfg()
+        cfg.policy_mode = "embedded"
+        d = self._diag(cfg)
+        self.assertEqual(d["data"]["policy_manager"]["mode"], "invalid")
+        self.assertIn("policy_mode_invalid", json.dumps(d))
+
+    def test_service_reachable_not_halted(self):
+        _sg.set_policy_client_override(StubPolicyClient())
+        d = self._diag(self._service_cfg())
+        pm = d["data"]["policy_manager"]
+        self.assertEqual((pm["mode"], pm["reachable"], pm["halted"], pm["error"]),
+                         ("service", True, False, None))
+        self.assertNotIn("policy_manager_unreachable", json.dumps(d))
+        self.assertNotIn("policy_manager_halted", json.dumps(d))
+
+    def test_service_unreachable_is_warning(self):
+        _sg.set_policy_client_override(StubPolicyClient(reachable=False))
+        d = self._diag(self._service_cfg())
+        pm = d["data"]["policy_manager"]
+        self.assertEqual((pm["reachable"], pm["halted"], pm["error"]), (False, None, "unreachable"))
+        self.assertIn("policy_manager_unreachable", json.dumps(d))
+        self.assertTrue(d["ok"])  # a warning, not an error: reads still work
+
+    def test_service_halted_is_warning(self):
+        _sg.set_policy_client_override(StubPolicyClient(halted=True))
+        d = self._diag(self._service_cfg())
+        pm = d["data"]["policy_manager"]
+        self.assertEqual((pm["reachable"], pm["halted"]), (True, True))
+        self.assertIn("policy_manager_halted", json.dumps(d))
+
+    def test_service_without_scoped_tokens_required_is_info_finding(self):
+        """Phase 3.6 / OQ-7: no identity -> approvals can never complete."""
+        _sg.set_policy_client_override(StubPolicyClient())
+        cfg = self._service_cfg()
+        d = self._diag(cfg)
+        codes = {f["code"]: f["severity"] for f in d.get("findings", [])}
+        self.assertEqual(codes.get("policy_service_without_scoped_tokens"), "info")
+        cfg.scoped_tokens_required = True
+        d = self._diag(cfg)
+        self.assertNotIn("policy_service_without_scoped_tokens", json.dumps(d))
+        self.assertNotIn("policy_service_without_scoped_tokens", json.dumps(self._diag(_cfg())))
+
+    def test_held_actions_count_in_service_mode(self):
+        import os, tempfile
+        from policy.held_actions import HeldAction, HeldActionStore
+        _sg.set_policy_client_override(StubPolicyClient())
+        with tempfile.TemporaryDirectory() as tmp:
+            store = HeldActionStore(os.path.join(tmp, "held.json"))
+            _sg.set_held_store_override(store)
+            self.addCleanup(_sg.set_held_store_override, None)
+            store.put(HeldAction.build("ap-1", "add_case_note", {"case_id": 1}, {}, ablauf="2099-01-01T00:00:00Z"))
+            d = self._diag(self._service_cfg())
+            self.assertEqual(d["data"]["held_actions"], 1)
+            self.assertNotIn("case_id", json.dumps(d["data"]["held_actions"]))
+        self.assertIsNone(self._diag(_cfg())["data"]["held_actions"])
+
+    def test_probe_never_leaks_more_than_error_class(self):
+        _sg.set_policy_client_override(StubPolicyClient(reachable=False))
+        out = _sg.probe_policy_manager(self._service_cfg())
+        self.assertEqual(out["error"], "unreachable")
+        self.assertNotIn("stub", json.dumps(out))
 
 
 if __name__ == "__main__":

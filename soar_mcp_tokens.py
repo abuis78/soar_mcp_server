@@ -233,6 +233,56 @@ class TokenVerification:
     agent_id: Optional[str] = None
 
 
+@dataclass(frozen=True)
+class Principal:
+    """Who is calling a tool, as the policy adapter needs it (SPEC-MCP
+    MCP-W04 / AN-08): principal type, token identity and agent id. Never the
+    token value.
+
+    A legacy full ``ph-auth-token`` (no scoped token) is a human without an
+    identity (concept decision OQ-7): ``principal_type = mensch``,
+    ``legacy = True``, no token_id / soar_user_id. It can read, it executes
+    writes only on ALLOW and it can never approve (today's behaviour).
+    """
+    principal_type: str = PRINCIPAL_HUMAN
+    token_id: Optional[str] = None
+    soar_user_id: Optional[str] = None
+    agent_id: Optional[str] = None
+    label: Optional[str] = None
+    legacy: bool = False
+
+    @classmethod
+    def from_verification(cls, tv: Optional["TokenVerification"]) -> "Principal":
+        if tv is None:
+            return cls(legacy=True)
+        return cls(
+            principal_type=(getattr(tv, "principal_type", None) or PRINCIPAL_HUMAN),
+            token_id=getattr(tv, "token_id", None),
+            soar_user_id=getattr(tv, "soar_user_id", None),
+            agent_id=getattr(tv, "agent_id", None) if getattr(tv, "principal_type", None) == PRINCIPAL_AGENT else None,
+            label=getattr(tv, "label", None),
+            legacy=False,
+        )
+
+    @property
+    def is_agent(self) -> bool:
+        return self.principal_type == PRINCIPAL_AGENT
+
+    @property
+    def is_broker(self) -> bool:
+        return self.principal_type == PRINCIPAL_BROKER
+
+    @property
+    def actor_id(self) -> Optional[str]:
+        """Accountable approver identity for the in-app policy layer (#138)."""
+        return self.soar_user_id
+
+    def audit_fields(self) -> str:
+        """Compact identity for audit lines; never the token value."""
+        return (f"principal={'legacy' if self.legacy else self.principal_type} "
+                f"token_id={self.token_id or 'legacy'} agent_id={self.agent_id or '-'}")
+
+
 @dataclass
 class TokenSummary:
     """Safe-to-list token metadata (never includes raw or hashed token)."""

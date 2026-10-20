@@ -129,6 +129,20 @@ class PolicyApprovalFlowTest(unittest.TestCase):
         call_tool("run_playbook", a, c, _cfg(policy=True), actor_id="bob")
         self.assertTrue(c.ran)
 
+    def test_freigabe_id_is_an_alias_of_approval_token(self):
+        """SPEC-MCP Phase 3.3 (concept 3.2, AC-11): same store, same semantics."""
+        c = _FakeClient("Containment")
+        tok = self._issue_token(c, "alice")
+        out1 = call_tool("run_playbook", dict(self.args, freigabe_id=tok), c, _cfg(policy=True), actor_id="bob")
+        self.assertIn("1/2", out1)
+        self.assertFalse(c.ran)
+        call_tool("run_playbook", dict(self.args, approval_token=tok), c, _cfg(policy=True), actor_id="carol")
+        self.assertTrue(c.ran)  # mixed spellings count against the same approval
+        c2 = _FakeClient("Message Eviction")
+        out = call_tool("run_playbook", dict(self.args, freigabe_id="bogus"), c2, _cfg(policy=True), actor_id="bob")
+        self.assertIn("Invalid or expired approval_token", out)
+        self.assertFalse(c2.ran)
+
     # --- initiator exclusion (issue #161, PM-F21 / AN-08 / AC-03) ------------
 
     def test_one_click_initiator_cannot_approve(self):

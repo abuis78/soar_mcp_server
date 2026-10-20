@@ -33,7 +33,14 @@ from typing import Any, Optional
 
 import requests
 
-from soar_mcp_config import READ_ONLY_TOOLS, McpServerConfig
+from soar_mcp_config import (
+    GATE_TOOLS,
+    POLICY_MODE_INVALID,
+    POLICY_MODE_SERVICE,
+    READ_ONLY_TOOLS,
+    McpServerConfig,
+    policy_effective_mode,
+)
 
 # ── Security constants ─────────────────────────────────────────────────────────
 _MAX_NOTE_LENGTH = 10_000   # characters — prevents storage exhaustion (issue #11)
@@ -558,6 +565,26 @@ TOOL_SCHEMAS: dict[str, dict] = {
         "inputSchema": {"type": "object", "properties": {}},
     },
     # ── Write tools ──────────────────────────────────────────────────────────
+    "approve_action": {
+        "description": (
+            "APPROVAL — Approve a held action by its Policy Manager freigabe_id "
+            "(policy_mode = service). For human analysts with a scoped MCP token only: "
+            "the token identity is the approver, the requester can never approve their own "
+            "action, and two-person gates need two different users. The call that completes "
+            "the approval redeems it (consume) and executes the held action; its result is "
+            "returned. In the default policy mode this tool only explains the approval_token path."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "freigabe_id": {
+                    "type": "string",
+                    "description": "The freigabe_id from the ⏸ hold message of the held action.",
+                },
+            },
+            "required": ["freigabe_id"],
+        },
+    },
     "add_case_note": {
         "description": (
             "⚠️ WRITE OPERATION — Add a note or comment to a SOAR case. "
@@ -4207,6 +4234,46 @@ def tool_diagnose_soar_mcp_environment(
                              "message": f"Scoped token store could not be read: "
                                         f"{type(exc).__name__}"})
 
+    # SPEC-MCP MCP-G06: policy_mode, Policy Manager reachability and halt
+    # state (service mode only; two side-effect-free GETs). Warnings, not
+    # errors: reads keep working, only write tools are refused meanwhile.
+    try:
+        from policy.service_gate import probe_policy_manager
+        policy_manager = probe_policy_manager(config)
+    except Exception as exc:  # noqa: BLE001
+        policy_manager = {"mode": posture.get("policy_mode"), "service_url_configured": None,
+                          "reachable": None, "halted": None, "error": type(exc).__name__}
+    if policy_manager.get("mode") == "service":
+        if policy_manager.get("reachable") is False:
+            findings.append({"severity": "warn", "code": "policy_manager_unreachable",
+                             "message": ("Policy Manager not reachable "
+                                         f"({policy_manager.get('error') or 'unknown'}): every "
+                                         "write tool is refused until it answers (fail-closed, "
+                                         "no fallback). Read tools are unaffected.")})
+        elif policy_manager.get("halted"):
+            findings.append({"severity": "warn", "code": "policy_manager_halted",
+                             "message": "Policy Manager reports the halt state (Not-Aus): write "
+                                        "requests from agent tokens are refused (HALTED); "
+                                        "human-triggered actions continue."})
+        # SPEC-MCP Phase 3.6 / concept OQ-7: without scoped tokens there is no
+        # approver identity, so approvals in service mode can never complete.
+        if not getattr(config, "scoped_tokens_required", False):
+            findings.append({"severity": "info", "code": "policy_service_without_scoped_tokens",
+                             "message": ("policy_mode = service without scoped_tokens_required: the "
+                                         "legacy ph-auth-token path has no identity, so its writes are "
+                                         "held with NO_INITIATOR and it can never approve. Recommended: "
+                                         "scoped_tokens_enabled + scoped_tokens_required.")})
+
+    # SPEC-MCP Phase 3.2: actions held for approval on this host (count only).
+    held_actions = None
+    if policy_manager.get("mode") == "service":
+        try:
+            from policy.service_gate import get_held_store
+            held_actions = get_held_store().count()
+        except Exception as exc:  # noqa: BLE001
+            findings.append({"severity": "warn", "code": "held_actions_unreadable",
+                             "message": f"Held-action store could not be read: {type(exc).__name__}"})
+
     data = {
         "app_version": config.server_version,
         "mcp_endpoint": endpoint,
@@ -4216,6 +4283,8 @@ def tool_diagnose_soar_mcp_environment(
         "enabled_tool_count": len(config.enabled_tools),
         "security_posture": posture,
         "principal_counts": principal_counts,
+        "policy_manager": policy_manager,
+        "held_actions": held_actions,
     }
     ok = auth_present and handler_reachable and not any(
         f.get("severity") == "error" for f in findings
@@ -4955,7 +5024,14 @@ TOOL_SCHEMAS["detect_custom_function_capabilities"] = {
 }
 
 
+def tool_approve_action(client: SoarApiClient, config: McpServerConfig, arguments: dict) -> str:
+    """Placeholder: approve_action is intercepted in call_tool because it needs the
+    caller's Principal (SPEC-MCP Phase 3.4). Reached only via a direct handler call."""
+    return "⛔ approve_action must be called through the MCP server (needs the caller identity)."
+
+
 _TOOL_HANDLERS = {
+    "approve_action": tool_approve_action,
     "list_cases": tool_list_cases,
     "get_case": tool_get_case,
     "search_cases": tool_search_cases,
@@ -5019,7 +5095,39 @@ _TOOL_HANDLERS = {
 
 # ── Write-tool confirmation gate (issue #50) ──────────────────────────────────
 # Write tools are those with a handler that are not read-only.
-_WRITE_TOOLS: frozenset[str] = frozenset(_TOOL_HANDLERS) - READ_ONLY_TOOLS
+# Gate tools (approve_action) are neither read nor write tools (SPEC-MCP Phase 3.4).
+_WRITE_TOOLS: frozenset[str] = frozenset(_TOOL_HANDLERS) - READ_ONLY_TOOLS - GATE_TOOLS
+
+
+# ── Agent context on every write tool (SPEC-MCP MCP-W07, concept OQ-12) ──────
+# One optional object instead of six loose arguments. Never added to
+# "required": humans keep calling the tools exactly as before; the Policy
+# Manager adapter enforces it for agent tokens.
+_FREIGABE_ID_SCHEMA = {
+    "type": "string",
+    "description": (
+        "Policy Manager approval id (freigabe_id) of a held action (policy_mode = service). "
+        "Call the tool again with the SAME arguments plus freigabe_id once all approvals are in; "
+        "the approval is redeemed (consume) and the action executed. In the default mode it is "
+        "accepted as an alias of approval_token (run_playbook)."
+    ),
+}
+
+
+def _attach_agent_context_schema() -> None:
+    """SPEC-MCP: every write tool takes the optional gate arguments
+    agent_context (Phase 2.4, MCP-W07) and freigabe_id (Phase 3.3, MCP-W06)."""
+    from policy.agent_context import AGENT_CONTEXT_SCHEMA
+    for _name in _WRITE_TOOLS:
+        _schema = TOOL_SCHEMAS.get(_name)
+        if not isinstance(_schema, dict):
+            continue
+        _props = _schema.setdefault("inputSchema", {}).setdefault("properties", {})
+        _props.setdefault("agent_context", AGENT_CONTEXT_SCHEMA)
+        _props.setdefault("freigabe_id", _FREIGABE_ID_SCHEMA)
+
+
+_attach_agent_context_schema()
 
 
 class _ConfirmStore:
@@ -5262,12 +5370,16 @@ def _resolve_playbook_id_by_name(name: str, client: SoarApiClient, config: McpSe
 def _policy_gate(
     tool_name: str, arguments: dict, client: SoarApiClient, config: McpServerConfig,
     actor_id: Optional[str] = None,
+    principal: Optional["Principal"] = None,
 ) -> Optional[str]:
     """Gated-autonomous run_playbook (#137/#138). Returns a block/hold/approval
     message, or None to proceed. Only acts on run_playbook when [policy]
     enabled = true. Every decision is audited (including ALLOW). Fail-safe: any
     error -> not ALLOW. 1CLICK/2PERSON collect distinct human approval(s) keyed
-    on the scoped-token identity (actor_id) before execution."""
+    on the scoped-token identity (actor_id) before execution.
+
+    principal (SPEC-MCP Phase 2.3) carries the full caller identity for the
+    Policy Manager adapter; the legacy in-app path below still keys on actor_id."""
     if tool_name != "run_playbook" or not getattr(config, "policy_enabled", False):
         return None
 
@@ -5326,8 +5438,10 @@ def _policy_gate(
 
     # 1CLICK / 2PERSON: collect distinct human approval(s) before executing (#138).
     needed = decision.needed_approvers
-    key_args = {k: v for k, v in arguments.items() if k != "approval_token"}
-    provided = arguments.get("approval_token")
+    # freigabe_id is accepted as an alias of approval_token (SPEC-MCP Phase 3.3,
+    # concept step 3.2): same store, same semantics, nothing else changes.
+    key_args = {k: v for k, v in arguments.items() if k not in ("approval_token", "freigabe_id")}
+    provided = arguments.get("approval_token") or arguments.get("freigabe_id")
     head = (f"  Playbook: {name or pid} | Category: {category or 'unknown'} | "
             f"Gate: {decision.gate.name}\n")
 
@@ -5380,20 +5494,34 @@ def call_tool(
     client: SoarApiClient,
     config: McpServerConfig,
     actor_id: Optional[str] = None,
+    principal: Optional["Principal"] = None,
 ) -> str:
     """
     Dispatch a tool call to its implementation.
 
     actor_id is the scoped-token soar_user_id of the caller (None for legacy
     full tokens); the policy layer uses it as the accountable approver identity.
+    principal (SPEC-MCP MCP-W04) is the full caller identity (type, token_id,
+    agent_id) for the Policy Manager adapter. When principal is given and
+    actor_id is not, actor_id is derived from it; existing callers that pass
+    only actor_id keep working unchanged.
 
     Returns a text string as the MCP content response.
     Never raises; errors are returned as text.
     """
+    if actor_id is None and principal is not None:
+        actor_id = principal.actor_id
     handler = _TOOL_HANDLERS.get(tool_name)
     if handler is None:
         return f"Unknown tool: '{tool_name}'"
     arguments = arguments or {}
+
+    # SPEC-MCP Phase 3.4 (MCP-W06): approve_action needs the caller identity and
+    # executes the held tool's handler itself after consume — no gate, no confirmation.
+    if tool_name == "approve_action":
+        from policy.service_gate import approve_action as _approve_action
+        return _approve_action(arguments, client, config, principal,
+                               dispatch=lambda held_tool, held_args: _TOOL_HANDLERS[held_tool](client, config, held_args))
 
     # Resolve run_playbook's playbook_name -> playbook_id BEFORE any gate, so a
     # name invocation can never bypass the policy gate (#148). Canonicalize to
@@ -5407,11 +5535,25 @@ def call_tool(
         arguments = {k: v for k, v in arguments.items() if k != "playbook_name"}
         arguments["playbook_id"] = resolved
 
-    # Policy gate first (gated autonomy) — may block/hold/require approval for
-    # run_playbook (#137/#138).
-    policy_msg = _policy_gate(tool_name, arguments, client, config, actor_id)
-    if policy_msg is not None:
-        return policy_msg
+    # Policy gate first (gated autonomy). SPEC-MCP MCP-G03 / Phase 2.5:
+    #   policy_mode ""        -> today's path: in-app layer, run_playbook only (#137/#138)
+    #   policy_mode "service" -> Policy Manager decides EVERY write tool (MCP-W01)
+    #   anything else         -> invalid: every write tool refused (fail-closed)
+    # Read tools never pass through a gate.
+    if tool_name in _WRITE_TOOLS:
+        mode = policy_effective_mode(config)
+        if mode == POLICY_MODE_INVALID:
+            from policy.service_gate import invalid_policy_mode_message
+            logger.warning("[soar_mcp.policy] policy_mode invalid -> refusing write tool %s", tool_name)
+            return invalid_policy_mode_message()
+        if mode == POLICY_MODE_SERVICE:
+            from policy.service_gate import decide_write_tool
+            policy_msg = decide_write_tool(tool_name, arguments, client, config, principal,
+                                           collect_values=_collect_case_artifact_values)
+        else:
+            policy_msg = _policy_gate(tool_name, arguments, client, config, actor_id, principal)
+        if policy_msg is not None:
+            return policy_msg
     gate = _maybe_require_confirmation(tool_name, arguments, config)
     if gate is not None:
         return gate

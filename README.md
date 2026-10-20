@@ -6,7 +6,7 @@ Transform Splunk SOAR into an MCP (Model Context Protocol) server endpoint for d
 
 **Key Features:**
 - ✅ **100% On-Premises** — No cloud services, no data exfiltration
-- ✅ **Read-Only by Default** — 33 read tools active, 12 write tools opt-in via UI checkboxes (45 tools total)
+- ✅ **Read-Only by Default** — 33 read tools active, 12 write tools + 1 approval tool opt-in via UI checkboxes (46 tools total)
 - ✅ **Asset-Based Configuration** — Control all tool availability via SOAR UI checkboxes, no SSH required
 - ✅ **COA Visual Editor Stack** — Full playbook graph inspection, validation, diff, and import/export (v1.6.3+)
 - ✅ **AI Instructions Field** — Inject SOC-specific context into every AI session
@@ -26,7 +26,7 @@ Transform Splunk SOAR into an MCP (Model Context Protocol) server endpoint for d
 - **Fully on-premises** — the app itself adds no cloud dependency and performs no external data transfer
 
 ### The tool model
-- **45 tools total:** 33 read-only (enabled by default) + 12 write tools (opt-in per SOAR UI checkbox)
+- **46 tools total:** 33 read-only (enabled by default) + 12 write tools + `approve_action` (v1.17.0+, opt-in per SOAR UI checkbox)
 - **Read:** inspect cases, artifacts, playbooks, and notes; inspect, validate, and diff the COA playbook graph
 - **Write (deliberately opt-in):** add notes, change case status/severity/owner, create artifacts, `run_playbook` (triggers real response actions), and `import_playbook`
 - Tool availability and all configuration are controlled entirely through **asset-config checkboxes** — no SSH required
@@ -138,6 +138,13 @@ path segment is the SOAR asset name, for example `mcp`.
 | **scoped_tokens_enabled** | `false` | Enable per-user, revocable scoped MCP tokens (v1.5.0+). |
 | **scoped_tokens_required** | `false` | Reject requests that do not present a valid scoped token. |
 | **agent_read_exceptions** | _(empty)_ | v1.15.0+ — comma-separated read-only tools an **agent** token may still call directly (SPEC-MCP MCP-L02). Empty = none. Every entry must be deliberately justified; it is flagged in the security posture. |
+| **policy_mode** | _(empty)_ | v1.16.0+ — decision path for the 12 write tools (SPEC-MCP MCP-G03). **Empty = today's behaviour** (in-app policy layer gates `run_playbook` only, see `policy_enabled`). `service` = **every** write tool is decided by the external Policy Manager before it runs, fail-closed. Anything else (incl. the reserved `embedded`) = invalid → all write tools blocked. Read tools are never affected. |
+| **policy_service_url** | _(empty)_ | v1.16.0+ — base URL of the Policy Manager (`https://host:port`, no `/v1`). Required for `policy_mode = service`; `https` only. |
+| **policy_timeout_s** | `5` | v1.16.0+ — request timeout for Policy Manager calls (0.5–120 s). A timeout **refuses** the write (no fallback). |
+| **policy_client_cert** | _(empty)_ | v1.16.0+ — mTLS client certificate: file **path** on the SOAR host (PEM). Never the content. |
+| **policy_client_key** | _(empty)_ | v1.16.0+ — mTLS client key: file path on the SOAR host (PEM). Never logged. |
+| **policy_ca** | _(empty)_ | v1.16.0+ — CA bundle (file path) used to verify the Policy Manager certificate. Empty = system trust store. |
+| **tool_approve_action** | `false` | v1.17.0+ — enable the approval tool `approve_action(freigabe_id)` (policy_mode = `service`). Human analysts with a scoped MCP token approve held actions; agent and broker tokens never see it. |
 
 **Tool Selection (Checkboxes):**
 
@@ -366,7 +373,12 @@ All configuration is managed from **SOAR UI → Apps → SOAR MCP Server → Ass
 | **scoped_tokens_enabled** | Boolean | Enable per-user scoped tokens (v1.5.0+) |
 | **scoped_tokens_required** | Boolean | Reject requests without a valid scoped token |
 | **agent_read_exceptions** | Text | Read-only tools an agent token may call directly (v1.15.0+, default none) |
-| **tool_*** | Boolean × 40 | Enable/disable each tool individually |
+| **policy_mode** | Text | `""` = today's path / `service` = Policy Manager decides every write tool (v1.16.0+) |
+| **policy_service_url** | Text | Policy Manager base URL, `https` only (v1.16.0+) |
+| **policy_timeout_s** | Numeric | Policy Manager timeout in seconds, default 5 (v1.16.0+) |
+| **policy_client_cert** / **policy_client_key** / **policy_ca** | Text | mTLS material as file paths on the SOAR host (v1.16.0+) |
+| **tool_*** | Boolean × 45 | Enable/disable each tool individually |
+| **tool_approve_action** | Boolean | Approval tool for held actions in `policy_mode = service` (v1.17.0+, default off) |
 
 **`mcp.conf`-only settings** (`local/mcp.conf`, applied on Test Connectivity):
 
@@ -455,6 +467,72 @@ category to `Enrichment` → it runs (`ALLOW`). Every decision is logged as
 [docs/policy-layer.md](docs/policy-layer.md) for the decision algorithm, risk
 formula, approval flow, config reference, fail-safe guarantees, and the full test
 procedure.
+
+### Policy Manager mode (v1.16.0+, SPEC-MCP Phase 2)
+
+The asset field **`policy_mode`** selects who decides the **12 write tools**
+(`run_playbook`, `add_case_note`, `create_artifact`, `create_container`, `delete_container`,
+`import_playbook`, `save_playbook_layout_only`, `update_case_owner`, `update_case_severity`,
+`update_case_status`, `create_custom_function_draft`, `update_custom_function_draft`):
+
+| `policy_mode` | Who decides | Behaviour |
+|---------------|-------------|-----------|
+| _(empty, default)_ | in-app policy layer (above) | **Exactly today's behaviour** — only `run_playbook` is gated, and only when `policy_enabled` is on. |
+| `service` | external **Policy Manager** (`POST /v1/decide`) | Every write tool is decided before it runs: `ALLOW` → runs, `DENY` → blocked, `APPROVE_*` → held. **Fail-closed:** Policy Manager unreachable, timeout, TLS error or malformed answer → the write is refused, no fallback to the in-app layer. |
+| anything else (incl. reserved `embedded`) | nobody | Invalid configuration — every write tool is refused until corrected; the security posture flags `policy_mode_invalid`. |
+
+Read tools are never affected by `policy_mode`. Settings: `policy_service_url` (`https` only),
+`policy_timeout_s`, optional mTLS as file paths (`policy_client_cert`, `policy_client_key`,
+`policy_ca`); the same keys exist under `[policy]` in `mcp.conf`.
+
+What the Policy Manager receives per write: the action (`tool` → `aktion.art`, target IDs,
+parameters, playbook category for `run_playbook`), the caller (`principal_type`, `token_id`,
+`soar_user_id`, `agent_id`; the legacy `ph-auth-token` path counts as `mensch`), asset values
+collected from the case (same enrichment as the in-app layer) and the optional
+**`agent_context`** object every write tool now accepts (`lauf_id`, `stufe` 0–4, `domaene`,
+`tipping_off`, `beleg_ids`, `urteil` with `empfehlung` / `gegenargumente` / `unsicherheiten` /
+`konfidenz`). For **agent** tokens `agent_context` is mandatory in `service` mode: missing
+evidence is refused locally as `NO_EVIDENCE`, an incomplete judgement as `INCOMPLETE_JUDGEMENT`
+(no Policy Manager round-trip). Humans may omit it. **Dry-runs** (`dry_run=true` on
+`save_playbook_layout_only` and the custom-function draft tools) write nothing and skip the
+Policy Manager (audit only).
+
+**Approvals and emergency stop (v1.17.0+, SPEC-MCP Phase 3):** a decision that needs approval
+(`APPROVE_1CLICK` / `APPROVE_2PERSON`) is held: the ⏸ message carries `entscheidung_id`,
+`freigabe_id` and `ablauf`, and the app remembers the held action under its `freigabe_id`
+(`local/held_actions.json`, mode 0600, expires with `ablauf`). Two ways to redeem it, both via
+the Policy Manager's `approve` / `consume` (which also enforce "the requester never approves"
+and "two different users"):
+
+1. **`approve_action(freigabe_id)`** (canonical; enable `tool_approve_action`) — human analysts
+   with a scoped MCP token only; the token identity is the approver. The call that completes the
+   approval redeems it (`consume`) and **executes the held action**, returning its result. Agent
+   and broker tokens neither see nor can call it; the legacy `ph-auth-token` has no identity and is
+   refused.
+2. **Re-call the tool** with the same arguments plus `freigabe_id` once all approvals are in —
+   the compatibility path for agents and clients without a UI. Pending approvals are reported
+   as `erteilt/noetig`; a changed tool or arguments is refused (`ACTION_CHANGED`).
+
+Approval in `service` mode is exactly one `consume` (single use); unreachable Policy Manager,
+`gueltig = false`, rejected/expired/consumed approvals never execute. In the default mode the
+in-app approval flow is unchanged and `freigabe_id` is merely an alias of `approval_token`.
+
+**Emergency stop (Not-Aus):** before an **agent** token's write is decided or redeemed the app asks
+`GET /v1/halt`; halted or unknown state refuses with `HALTED`. Humans, brokers and the legacy token
+keep working (the Policy Manager still checks the halt on its side).
+
+The wire format (request `aktion` / `kontext` incl. `principal_type`, `initiator`, `artefakt_werte`;
+`HaltStatus {angehalten, grund}`, `ConsumeResult {gueltig, code}`, `ApprovalStatus {status, erteilt,
+noetig, code}`) follows `policy_client.base` from the PolicyManager repo (branch `feature/p1-core`,
+P1.5). Still assumed until the PolicyManager P3 service exists: the request bodies of
+`approve` / `reject` (`{"freigebender": <id>}`) and `consume` (the decide request).
+
+`diagnose_soar_mcp_environment` reports `policy_manager` (`mode`, `reachable`, `halted`) and
+`held_actions` (count), flags `policy_manager_unreachable` / `policy_manager_halted` and hints
+`policy_service_without_scoped_tokens` (no identity → no approvals; set `scoped_tokens_required`).
+Every decision, approval and redemption is logged as `[soar_mcp.policy] service …` with
+`entscheidung_id` / `freigabe_id` in `phantom.log`; approval tokens and mTLS key material are
+never logged.
 
 ---
 
@@ -597,6 +675,30 @@ tail -f /var/log/phantom/soar/phantom.log | grep soar_mcp_handler
 ---
 
 ## Changelog
+
+### v1.17.0 (2026-10-19) — SPEC-MCP Phase 3: approvals, approve_action, emergency stop
+Implements Phase 3 of the `soar_mcp_server` rebuild specification (epic [#165](https://github.com/abuis78/soar_mcp_server/issues/165)). **No behaviour change in the default `policy_mode`** (AC-11); everything below applies to `policy_mode = service`.
+- 🔌 **Wire format aligned with `policy_client.base` (MCP-G02, concept OQ-15)** — request `kontext.principal_type` / `initiator` / `agent_id` / `artefakt_werte`, `ziel` as a list; `HaltStatus {angehalten, grund}`, `ConsumeResult {gueltig, code}`, `ApprovalStatus {status, erteilt, noetig, code}`; new client methods `approve` / `reject`; `consume` carries the decide request (`ACTION_CHANGED` guard). Source: PolicyManager repo `feature/p1-core` @ `c6851e7` (P1.5).
+- 🗂️ **Held actions (MCP-W06, OQ-16)** — `policy/held_actions.py`: a held write is remembered under its `freigabe_id` (`local/held_actions.json`, 0600, fcntl, expires with `ablauf`, never stores tokens).
+- 🔁 **Redeem by re-call (MCP-W06, OQ-11, AC-05)** — every write tool accepts `freigabe_id`; approved → `consume` → execute, pending → ⏸ `erteilt/noetig`, anything else refused. Default mode: `freigabe_id` is an alias of `approval_token`.
+- ✅ **New tool `approve_action(freigabe_id)` (MCP-W06, OQ-7)** — 46 tools total: new category "gate tool" (neither read nor write), asset checkbox `tool_approve_action` (off by default). Humans with a scoped MCP token only; hidden from and refused for `agent` / `broker` tokens (audit `denied:human_only`). The completing approval consumes and executes the held action. Execution bypasses `require_confirmation` (the approval is the stronger confirmation) and runs with the SOAR token of the last approver, as today.
+- 🛑 **Emergency stop (MCP-W08, AC-09, PM-F31)** — agent writes and redemptions ask `GET /v1/halt` first; halted or unknown → `HALTED` without a decide round-trip. Humans, brokers and the legacy token are unaffected.
+- 🩺 **Diagnostics (MCP-G06)** — `held_actions` count; info finding `policy_service_without_scoped_tokens` (OQ-7).
+- 📐 **Remaining assumptions** (code comments `ASSUMPTION`): request bodies of `approve` / `reject` (`{"freigebender": …}`) and `consume` (decide request). No live verification against a real Policy Manager was possible; all HTTP paths are covered by a local fake server, all flows by `StubPolicyClient`.
+- ⏳ **Not in this release:** swap of `policy/client.py` for the `policy_client` wheel (once PM-P3 ships `ServicePolicyClient`), broker tool-list hiding (OQ-14, Phase 4).
+- 🧪 57 new tests (426 total).
+
+### v1.16.0 (2026-10-19) — SPEC-MCP Phase 2: Policy Manager service mode
+Implements Phase 2 of the `soar_mcp_server` rebuild specification (epic [#165](https://github.com/abuis78/soar_mcp_server/issues/165)). **No behaviour change unless `policy_mode` is set**: the default (empty) keeps today's path exactly (AC-11); read tools are never gated.
+- ⚙️ **`policy_mode` transition rule (MCP-G03, concept OQ-8)** — new asset fields `policy_mode`, `policy_service_url`, `policy_timeout_s`, `policy_client_cert`, `policy_client_key`, `policy_ca` (also `mcp.conf [policy]`). `""` = in-app layer as before, `service` = external Policy Manager, anything else (incl. reserved `embedded`) = invalid → every write tool refused; posture flag `policy_mode_invalid`.
+- 🔌 **Policy Manager client (MCP-G02/G04, AN-01/02/04)** — `policy/client.py`: `https`-only HTTP client with optional mTLS (paths only), timeout, strict response parsing (`entscheidung_id`, `gate`, `freigaben_noetig`, `freigabe_id`, `ablauf`, `code`), `PolicyClientError` kinds `config|tls|timeout|unreachable|http|contract`; `StubPolicyClient` for tests.
+- 🛡️ **Policy adapter for every write tool (MCP-W01..W05/W07/W09)** — `policy/service_gate.py` decides all 12 write tools in `service` mode before execution: `ALLOW` runs, `DENY` blocks (`HALTED` / `NO_EVIDENCE` / `INCOMPLETE_JUDGEMENT`), `APPROVE_*` holds. **Fail-closed, no fallback.** Dry-runs skip the decision (OQ-13).
+- 👤 **Caller identity in the gate (MCP-W04, OQ-7)** — `Principal` (type, `token_id`, `soar_user_id`, `agent_id`) travels from the handler into `call_tool` and the gates; legacy `ph-auth-token` = `mensch`. Never carries the token value.
+- 🧾 **`agent_context` on all write tools (MCP-W07, OQ-12)** — optional object (`lauf_id`, `stufe`, `domaene`, `tipping_off`, `beleg_ids`, `urteil`); required for `agent` principals in `service` mode, validated locally before any network call. `lauf_id` inside `agent_context` is preferred for the audit line.
+- 🩺 **Diagnostics (MCP-G06)** — `diagnose_soar_mcp_environment` reports `policy_manager` and flags `policy_manager_unreachable` / `policy_manager_halted`.
+- ⏳ **Not in this release:** approval redemption (`approve_action` / consume), halt enforcement via a live Policy Manager, broker tool-list hiding (OQ-14) — Phase 3/4, after Policy Manager P3.
+- 📐 **Marked assumptions** (code comments `ASSUMPTION`, to be reconciled with the Policy Manager P3 interface): DENY reason in top-level `code`; `GET /v1/halt` → `{"halted": bool}`; consume success = HTTP 200; `GET /health` 200 + JSON object = reachable; request fields `initiator`, `aktion.parameter`, `kontext.asset_werte`. No live verification against a real Policy Manager was possible yet; coverage is via a local fake HTTP server.
+- 🧪 113 new tests (369 total).
 
 ### v1.15.0 (2026-10-18) — SPEC-MCP Phase 1: principal type + agent read gate
 Implements Phase 1 of the `soar_mcp_server` rebuild specification (Augmented SOC, SPEC-MCP v0.1). **No behaviour change for existing tokens or the legacy `ph-auth-token` path**; the new gate applies only to tokens minted as `agent`.
