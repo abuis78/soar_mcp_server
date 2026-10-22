@@ -721,7 +721,7 @@ Implements Phase 2 of the `soar_mcp_server` rebuild specification (epic [#165](h
 - 🧪 113 new tests (369 total).
 
 ### v1.15.0 (2026-10-18) — SPEC-MCP Phase 1: principal type + agent read gate
-Implements Phase 1 of the `soar_mcp_server` rebuild specification (Augmented SOC, SPEC-MCP v0.1). **No behaviour change for existing tokens or the legacy `ph-auth-token` path**; the new gate applies only to tokens minted as `agent`.
+Implements Phase 1 of the `soar_mcp_server` rebuild specification (SPEC-MCP v0.1). **No behaviour change for existing tokens or the legacy `ph-auth-token` path**; the new gate applies only to tokens minted as `agent`.
 - ✨ **Principal type on scoped tokens (MCP-G01)** — `mint mcp token` takes `principal_type` (`mensch` | `agent` | `broker`, default `mensch`) and `agent_id` (required for `agent`). Stored in the token store (format version unchanged), returned by mint/list; pre-existing entries read as `mensch`.
 - 🔒 **Agent read gate (MCP-L01)** — an `agent` token gets no direct read tools: `tools/list` hides all 33 read-only tools and `tools/call` refuses them with `USE_TOOL_BROKER` (audit `denied:use_tool_broker`). One predicate drives both, so hidden == refused. Enabled write tools remain callable (they go through the policy adapter in Phase 2).
 - ⚙️ **`agent_read_exceptions` (MCP-L02)** — asset-config field / `mcp.conf [policy]`: explicit, admin-justified read tools an agent may still call. Default empty; only read-only names are accepted; a call via exception is audited as `ok:agent_read_exception`; the security posture flags `agent_read_exceptions_set`.
