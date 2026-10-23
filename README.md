@@ -688,6 +688,12 @@ tail -f /var/log/phantom/soar/phantom.log | grep soar_mcp_handler
 
 ## Changelog
 
+### v1.18.2 (2026-10-23) — PM-F42 follow-up: tool-call audit, decision log hash
+Fixes two findings of the PolicyManager review of v1.18.1 (#172). **No behaviour change in the default `policy_mode`.**
+- 🔒 **Tool-call audit no longer carries the raw `freigabe_id` (PM-F42 / S14)** — `approve_action(freigabe_id=…)` and redemptions `<tool>(…, freigabe_id=…)` reach the `soar_mcp.audit` line as `#<approval_ref>` (`sha256(id)[:16]`, equal to the Policy Manager's `freigabe_hash`). v1.18.1 still wrote the id in clear text there.
+- 🐛 **Decision log line hashed the approval id twice** — `freigabe_ref` in the `service decision` line now equals `approval_ref(freigabe_id)` once, and `-` when the decision carries no id, so it correlates with the Policy Manager audit when an approval is opened.
+- 🧪 2 new tests (450 total).
+
 ### v1.18.1 (2026-10-23) — approval ids never in clear text, judgement rule W14
 Maintenance release after the PolicyManager P5 review (PM-F42 / S14, decision W14). **No behaviour change in the default `policy_mode`.**
 - 🔒 **Approval ids are never logged or reported in clear text (PM-F42 / S14)** — log lines carry `freigabe_ref` = `sha256(freigabe_id)[:16]` (identical to `freigabe_hash` in the Policy Manager audit, so both sides correlate) and Policy Manager error texts show `/v1/approvals/#<ref>`. Messages to the analyst that must carry the `freigabe_id` for redemption are unchanged.
