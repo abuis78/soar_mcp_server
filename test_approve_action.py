@@ -11,7 +11,7 @@ import unittest
 from unittest.mock import patch
 
 import policy.service_gate as sg
-from policy.client import PolicyClientError, PolicyDecision, StubPolicyClient
+from policy.client import PolicyClientError, PolicyDecision, StubPolicyClient, approval_ref
 from policy.held_actions import HeldActionStore
 from soar_mcp_config import ALL_TOOLS, GATE_TOOLS, READ_ONLY_TOOLS, McpServerConfig
 from soar_mcp_handler import SoarMcpRestHandler
@@ -83,7 +83,8 @@ class ApproveActionFlowTest(_Base):
         self.assertEqual(self.stub.calls[-1][1][1]["aktion"]["art"], "add_case_note")
         self.assertIsNone(self.held.get(fid))
         line = "\n".join(cm.output)
-        self.assertIn("approve_action executed tool=add_case_note freigabe_id=ap-1 entscheidung_id=pm-10", line)
+        self.assertIn(f"approve_action executed tool=add_case_note freigabe_ref={approval_ref(fid)} entscheidung_id=pm-10", line)
+        self.assertNotIn("ap-1", line)  # PM-F42: approval ids never in clear text
         self.assertNotIn("tok_carol", line.replace("token_id=tok_carol", ""))  # identity only via audit fields
         # Nothing left to redeem.
         out = self.approve("carol")

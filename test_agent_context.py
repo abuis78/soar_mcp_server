@@ -53,13 +53,43 @@ class ValidateAgentContextTest(unittest.TestCase):
             self.assertEqual((ctx, code), (None, NO_EVIDENCE))
 
     def test_agent_with_incomplete_urteil_is_incomplete_judgement(self):
-        for missing in ("gegenargumente", "unsicherheiten", "konfidenz"):
+        for missing in ("empfehlung", "gegenargumente", "unsicherheiten", "konfidenz"):
             urteil = {k: v for k, v in FULL["urteil"].items() if k != missing}
             ctx, code = validate_agent_context(dict(FULL, urteil=urteil), required=True)
             self.assertEqual((ctx, code), (None, INCOMPLETE_JUDGEMENT), missing)
             self.assertIn(missing, describe_agent_context_error(dict(FULL, urteil=urteil), required=True))
         ctx, code = validate_agent_context({k: v for k, v in FULL.items() if k != "urteil"}, required=True)
         self.assertEqual(code, INCOMPLETE_JUDGEMENT)
+
+    def test_agent_with_empty_judgement_fields_is_incomplete_judgement(self):
+        """Decision W14 / D23: empty lists and a blank empfehlung are refused locally, naming the field."""
+        for field in ("gegenargumente", "unsicherheiten"):
+            raw = dict(FULL, urteil=dict(FULL["urteil"], **{field: []}))
+            with self.subTest(field=field):
+                ctx, code = validate_agent_context(raw, required=True)
+                self.assertEqual((ctx, code), (None, INCOMPLETE_JUDGEMENT))
+                msg = describe_agent_context_error(raw, required=True)
+                self.assertIn(field, msg)
+                self.assertIn("keine erkannt", msg)
+        # Blank strings (empfehlung "" or a blank list entry) are shape errors as before, naming the field.
+        for field, value in (("empfehlung", "   "), ("gegenargumente", ["", "  "])):
+            raw = dict(FULL, urteil=dict(FULL["urteil"], **{field: value}))
+            with self.subTest(field=field, value=value):
+                ctx, code = validate_agent_context(raw, required=True)
+                self.assertEqual((ctx, code), (None, INVALID_AGENT_CONTEXT))
+                self.assertIn(field, describe_agent_context_error(raw, required=True))
+        # 'keine erkannt' as the single entry is the documented way to say "nothing found".
+        raw = dict(FULL, urteil=dict(FULL["urteil"], gegenargumente=["keine erkannt"]))
+        self.assertIsNone(validate_agent_context(raw, required=True)[1])
+        # Humans: empty lists stay valid (the judgement is optional for them).
+        raw = dict(FULL, urteil=dict(FULL["urteil"], gegenargumente=[]))
+        self.assertIsNone(validate_agent_context(raw, required=False)[1])
+
+    def test_schema_description_names_all_four_judgement_fields_as_required(self):
+        text = AGENT_CONTEXT_SCHEMA["description"]
+        for field in ("empfehlung", "gegenargumente", "unsicherheiten", "konfidenz"):
+            self.assertIn(field, text)
+        self.assertIn("keine erkannt", text)
 
     def test_human_partial_object_is_accepted(self):
         ctx, code = validate_agent_context({"lauf_id": "r-1", "stufe": 2}, required=False)

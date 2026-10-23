@@ -13,7 +13,7 @@ from unittest.mock import patch
 
 import policy.service_gate as sg
 from policy.held_actions import HeldActionStore
-from policy.client import PolicyClientError, PolicyDecision, StubPolicyClient
+from policy.client import PolicyClientError, PolicyDecision, StubPolicyClient, approval_ref
 from soar_mcp_config import ALL_TOOLS, READ_ONLY_TOOLS, McpServerConfig
 from soar_mcp_tokens import Principal, TokenVerification
 from soar_mcp_tools import _WRITE_TOOLS, call_tool
@@ -400,7 +400,9 @@ class RedeemTest(_Base):
         self.assertEqual([c[0] for c in self.stub.calls], ["approval_status", "consume"])
         self.assertEqual(self.stub.calls[1][1][0], fid)
         self.assertEqual(self.stub.calls[1][1][1]["aktion"]["art"], "add_case_note")  # the held request
-        self.assertIn("redeemed freigabe_id=ap-1 entscheidung_id=pm-10", "\n".join(cm.output))
+        log = "\n".join(cm.output)
+        self.assertIn(f"redeemed freigabe_ref={approval_ref(fid)} entscheidung_id=pm-10", log)
+        self.assertNotIn("ap-1", log)  # PM-F42: approval ids never in clear text
         self.assertIsNone(self.held.get(fid))
         # Second redemption: nothing held any more, nothing executed.
         out = self.call("add_case_note", dict(self.ARGS, freigabe_id=fid))

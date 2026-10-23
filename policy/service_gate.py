@@ -34,7 +34,8 @@ import logging
 from typing import Any, Callable, Optional
 
 from policy.agent_context import describe_agent_context_error, validate_agent_context
-from policy.client import PolicyClient, PolicyClientError, PolicyDecision, build_policy_client
+from policy.client import (PolicyClient, PolicyClientError, PolicyDecision, approval_ref,
+                           build_policy_client)
 from policy.held_actions import HeldAction, HeldActionStore
 
 logger = logging.getLogger("soar_mcp.policy")
@@ -277,9 +278,9 @@ def decide_write_tool(
         return (f"⛔ Blocked by policy: Policy Manager client failure ({type(exc).__name__}). "
                 "Nothing was executed.")
 
-    logger.info("[soar_mcp.policy] service decision gate=%s entscheidung_id=%s freigabe_id=%s code=%s "
+    logger.info("[soar_mcp.policy] service decision gate=%s entscheidung_id=%s freigabe_ref=%s code=%s "
                 "tool=%s %s policy_version=%s",
-                decision.gate, decision.entscheidung_id, decision.freigabe_id or "-",
+                decision.gate, decision.entscheidung_id, approval_ref(approval_ref(decision.freigabe_id)),
                 decision.code or "-", tool_name, ident, decision.policy_version or "-")
 
     if decision.gate == "ALLOW":
@@ -301,8 +302,8 @@ def decide_write_tool(
         get_held_store().put(held)
         stored = True
     except Exception as exc:  # noqa: BLE001 — the hold stands; only redemption is affected
-        logger.error("[soar_mcp.policy] service held action not stored freigabe_id=%s: %s",
-                     decision.freigabe_id, type(exc).__name__)
+        logger.error("[soar_mcp.policy] service held action not stored freigabe_ref=%s: %s",
+                     approval_ref(decision.freigabe_id), type(exc).__name__)
         stored = False
     return hold_message(decision, tool_name, needed, summary, stored=stored)
 
@@ -359,16 +360,16 @@ def redeem_held_action(tool_name: str, args: dict, config: Any, principal: Any, 
     try:
         held = store.get(fid)
     except Exception as exc:  # noqa: BLE001
-        logger.error("[soar_mcp.policy] service held store unreadable freigabe_id=%s: %s", fid, type(exc).__name__)
+        logger.error("[soar_mcp.policy] service held store unreadable freigabe_ref=%s: %s", approval_ref(fid), type(exc).__name__)
         held = None
     if held is None:
-        logger.info("[soar_mcp.policy] service redeem refused=UNKNOWN_HELD_ACTION freigabe_id=%s tool=%s %s",
-                    fid, tool_name, ident)
+        logger.info("[soar_mcp.policy] service redeem refused=UNKNOWN_HELD_ACTION freigabe_ref=%s tool=%s %s",
+                    approval_ref(fid), tool_name, ident)
         return (f"⛔ No held action for freigabe_id={fid}: unknown, expired or already redeemed on this SOAR "
                 f"host. Request the action again (call {tool_name} without freigabe_id). Nothing was executed.")
     if held.tool != tool_name or held.args != _action_args(args):
-        logger.info("[soar_mcp.policy] service redeem refused=ACTION_CHANGED freigabe_id=%s tool=%s held_tool=%s %s",
-                    fid, tool_name, held.tool, ident)
+        logger.info("[soar_mcp.policy] service redeem refused=ACTION_CHANGED freigabe_ref=%s tool=%s held_tool=%s %s",
+                    approval_ref(fid), tool_name, held.tool, ident)
         return (f"⛔ Blocked by policy (ACTION_CHANGED): freigabe_id={fid} was issued for {held.tool} with "
                 "different arguments. A held action can only be redeemed with the same tool and the same "
                 "arguments. Nothing was executed.")
@@ -377,8 +378,8 @@ def redeem_held_action(tool_name: str, args: dict, config: Any, principal: Any, 
         status = pm.approval_status(fid)
         if status.pending:
             noetig = status.noetig or held.noetig
-            logger.info("[soar_mcp.policy] service redeem status=pending freigabe_id=%s erteilt=%s noetig=%s tool=%s %s",
-                        fid, status.erteilt, noetig, tool_name, ident)
+            logger.info("[soar_mcp.policy] service redeem status=pending freigabe_ref=%s erteilt=%s noetig=%s tool=%s %s",
+                        approval_ref(fid), status.erteilt, noetig, tool_name, ident)
             return (f"⏸ Approval pending ({status.erteilt}/{noetig}) for freigabe_id={fid} "
                     f"(entscheidung_id={held.entscheidung_id}). The remaining approver(s) must call "
                     f'approve_action(freigabe_id="{fid}"); then call {tool_name} again with freigabe_id, '
@@ -386,32 +387,32 @@ def redeem_held_action(tool_name: str, args: dict, config: Any, principal: Any, 
         if not status.approved:
             if status.status in _FINAL_APPROVAL_STATES:
                 _forget(store, fid)
-            logger.info("[soar_mcp.policy] service redeem refused=%s code=%s freigabe_id=%s tool=%s %s",
-                        status.status, status.code or "-", fid, tool_name, ident)
+            logger.info("[soar_mcp.policy] service redeem refused=%s code=%s freigabe_ref=%s tool=%s %s",
+                        status.status, status.code or "-", approval_ref(fid), tool_name, ident)
             return (f"⛔ Blocked by policy: approval {status.status}"
                     + (f" ({status.code})" if status.code else "")
                     + f" for freigabe_id={fid}. Request the action again. Nothing was executed.")
         result = pm.consume(fid, held.request)
     except PolicyClientError as exc:
-        logger.error("[soar_mcp.policy] service unavailable on redeem freigabe_id=%s tool=%s %s kind=%s: %s",
-                     fid, tool_name, ident, exc.kind, exc.reason)
+        logger.error("[soar_mcp.policy] service unavailable on redeem freigabe_ref=%s tool=%s %s kind=%s: %s",
+                     approval_ref(fid), tool_name, ident, exc.kind, exc.reason)
         return (f"⛔ Blocked by policy: Policy Manager unavailable ({exc.kind}: {exc.reason}). "
                 "No fallback (fail-closed). Nothing was executed; the approval is untouched.")
     except Exception as exc:  # noqa: BLE001
-        logger.exception("[soar_mcp.policy] service client failure on redeem freigabe_id=%s %s", fid, ident)
+        logger.exception("[soar_mcp.policy] service client failure on redeem freigabe_ref=%s %s", approval_ref(fid), ident)
         return (f"⛔ Blocked by policy: Policy Manager client failure ({type(exc).__name__}). "
                 "Nothing was executed.")
 
     if not result.ok:
         if result.code in _FINAL_CONSUME_CODES:
             _forget(store, fid)
-        logger.info("[soar_mcp.policy] service consume refused code=%s freigabe_id=%s entscheidung_id=%s tool=%s %s",
-                    result.code or "-", fid, held.entscheidung_id, tool_name, ident)
+        logger.info("[soar_mcp.policy] service consume refused code=%s freigabe_ref=%s entscheidung_id=%s tool=%s %s",
+                    result.code or "-", approval_ref(fid), held.entscheidung_id, tool_name, ident)
         return (f"⛔ Blocked by policy: consume refused ({result.code or 'no code'}) for freigabe_id={fid}. "
                 "Nothing was executed." + (" Request the action again." if result.code in _FINAL_CONSUME_CODES else ""))
     _forget(store, fid)
-    logger.info("[soar_mcp.policy] service redeemed freigabe_id=%s entscheidung_id=%s gate=%s tool=%s "
-                "initiator=%s %s", fid, held.entscheidung_id, held.gate, tool_name, held.initiator or "-", ident)
+    logger.info("[soar_mcp.policy] service redeemed freigabe_ref=%s entscheidung_id=%s gate=%s tool=%s "
+                "initiator=%s %s", approval_ref(fid), held.entscheidung_id, held.gate, tool_name, held.initiator or "-", ident)
     return None
 
 
@@ -452,7 +453,7 @@ def approve_action(
     if principal is None or getattr(principal, "legacy", True) or ptype != "mensch" or not approver:
         why = ("agent and broker tokens cannot approve" if ptype != "mensch"
                else "this call carries no scoped-token identity (legacy ph-auth-token)")
-        logger.info("[soar_mcp.policy] approve_action refused=NO_APPROVER freigabe_id=%s %s", fid, ident)
+        logger.info("[soar_mcp.policy] approve_action refused=NO_APPROVER freigabe_ref=%s %s", approval_ref(fid), ident)
         return (f"⛔ approve_action is for human analysts with a scoped MCP token (principal_type = mensch, "
                 f"identity = token): {why}. Mint a scoped MCP token per approver ('mint mcp token') and "
                 "retry. Nothing was executed.")
@@ -469,29 +470,29 @@ def approve_action(
     try:
         held = store.get(fid)
     except Exception as exc:  # noqa: BLE001
-        logger.error("[soar_mcp.policy] approve_action held store unreadable freigabe_id=%s: %s", fid, type(exc).__name__)
+        logger.error("[soar_mcp.policy] approve_action held store unreadable freigabe_ref=%s: %s", approval_ref(fid), type(exc).__name__)
         held = None
     if held is None:
-        logger.info("[soar_mcp.policy] approve_action refused=UNKNOWN_HELD_ACTION freigabe_id=%s approver=%s %s",
-                    fid, approver, ident)
+        logger.info("[soar_mcp.policy] approve_action refused=UNKNOWN_HELD_ACTION freigabe_ref=%s approver=%s %s",
+                    approval_ref(fid), approver, ident)
         return (f"⛔ No held action for freigabe_id={fid} on this SOAR host: unknown, expired or already "
                 "redeemed. The requester must request the action again. Nothing was executed.")
 
     try:
         status = pm.approve(fid, approver)
     except PolicyClientError as exc:
-        logger.error("[soar_mcp.policy] approve_action service unavailable freigabe_id=%s %s kind=%s: %s",
-                     fid, ident, exc.kind, exc.reason)
+        logger.error("[soar_mcp.policy] approve_action service unavailable freigabe_ref=%s %s kind=%s: %s",
+                     approval_ref(fid), ident, exc.kind, exc.reason)
         return (f"⛔ Blocked by policy: Policy Manager unavailable ({exc.kind}: {exc.reason}). "
                 "No fallback (fail-closed). Nothing was executed; the approval is untouched.")
     except Exception as exc:  # noqa: BLE001
-        logger.exception("[soar_mcp.policy] approve_action client failure freigabe_id=%s %s", fid, ident)
+        logger.exception("[soar_mcp.policy] approve_action client failure freigabe_ref=%s %s", approval_ref(fid), ident)
         return f"⛔ Blocked by policy: Policy Manager client failure ({type(exc).__name__}). Nothing was executed."
 
     noetig = status.noetig or held.noetig
-    logger.info("[soar_mcp.policy] approve_action status=%s code=%s erteilt=%s noetig=%s freigabe_id=%s "
+    logger.info("[soar_mcp.policy] approve_action status=%s code=%s erteilt=%s noetig=%s freigabe_ref=%s "
                 "entscheidung_id=%s approver=%s initiator=%s %s",
-                status.status, status.code or "-", status.erteilt, noetig, fid, held.entscheidung_id,
+                status.status, status.code or "-", status.erteilt, noetig, approval_ref(fid), held.entscheidung_id,
                 approver, held.initiator or "-", ident)
     head = f"freigabe_id={fid} (entscheidung_id={held.entscheidung_id}, held {held.tool})"
     if status.code == "SELF_APPROVAL":
@@ -526,28 +527,28 @@ def approve_action(
     try:
         result = pm.consume(fid, held.request)
     except PolicyClientError as exc:
-        logger.error("[soar_mcp.policy] approve_action consume unavailable freigabe_id=%s %s kind=%s: %s",
-                     fid, ident, exc.kind, exc.reason)
+        logger.error("[soar_mcp.policy] approve_action consume unavailable freigabe_ref=%s %s kind=%s: %s",
+                     approval_ref(fid), ident, exc.kind, exc.reason)
         return (f"⛔ Blocked by policy: Policy Manager unavailable on consume ({exc.kind}: {exc.reason}). "
                 "Nothing was executed; call approve_action again later.")
     except Exception as exc:  # noqa: BLE001
-        logger.exception("[soar_mcp.policy] approve_action consume failure freigabe_id=%s %s", fid, ident)
+        logger.exception("[soar_mcp.policy] approve_action consume failure freigabe_ref=%s %s", approval_ref(fid), ident)
         return f"⛔ Blocked by policy: Policy Manager client failure ({type(exc).__name__}). Nothing was executed."
     if not result.ok:
         if result.code in _FINAL_CONSUME_CODES:
             _forget(store, fid)
-        logger.info("[soar_mcp.policy] approve_action consume refused code=%s freigabe_id=%s %s",
-                    result.code or "-", fid, ident)
+        logger.info("[soar_mcp.policy] approve_action consume refused code=%s freigabe_ref=%s %s",
+                    result.code or "-", approval_ref(fid), ident)
         return (f"⛔ Blocked by policy: consume refused ({result.code or 'no code'}) for {head}. "
                 "Nothing was executed.")
     _forget(store, fid)
-    logger.info("[soar_mcp.policy] approve_action executed tool=%s freigabe_id=%s entscheidung_id=%s "
+    logger.info("[soar_mcp.policy] approve_action executed tool=%s freigabe_ref=%s entscheidung_id=%s "
                 "gate=%s approver=%s initiator=%s %s",
-                held.tool, fid, held.entscheidung_id, held.gate, approver, held.initiator or "-", ident)
+                held.tool, approval_ref(fid), held.entscheidung_id, held.gate, approver, held.initiator or "-", ident)
     try:
         out = dispatch(held.tool, dict(held.args))
     except Exception as exc:  # noqa: BLE001
-        logger.exception("[soar_mcp.policy] approve_action dispatch failed tool=%s freigabe_id=%s", held.tool, fid)
+        logger.exception("[soar_mcp.policy] approve_action dispatch failed tool=%s freigabe_ref=%s", held.tool, approval_ref(fid))
         out = f"Internal error executing tool '{held.tool}': {type(exc).__name__}"
     return (f"✅ Approved ({status.erteilt}/{noetig}) and executed {held.tool} — {head}, "
             f"approved by {approver}, requested by {held.initiator or 'unknown'}.\n{out}")
@@ -557,7 +558,7 @@ def _forget(store: HeldActionStore, fid: str) -> None:
     try:
         store.remove(fid)
     except Exception as exc:  # noqa: BLE001
-        logger.warning("[soar_mcp.policy] service held action not removed freigabe_id=%s: %s", fid, type(exc).__name__)
+        logger.warning("[soar_mcp.policy] service held action not removed freigabe_ref=%s: %s", approval_ref(fid), type(exc).__name__)
 
 
 def hold_message(decision: PolicyDecision, tool_name: str, needed: int, summary: str = "", *,

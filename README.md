@@ -688,6 +688,13 @@ tail -f /var/log/phantom/soar/phantom.log | grep soar_mcp_handler
 
 ## Changelog
 
+### v1.18.1 (2026-10-23) — approval ids never in clear text, judgement rule W14
+Maintenance release after the PolicyManager P5 review (PM-F42 / S14, decision W14). **No behaviour change in the default `policy_mode`.**
+- 🔒 **Approval ids are never logged or reported in clear text (PM-F42 / S14)** — log lines carry `freigabe_ref` = `sha256(freigabe_id)[:16]` (identical to `freigabe_hash` in the Policy Manager audit, so both sides correlate) and Policy Manager error texts show `/v1/approvals/#<ref>`. Messages to the analyst that must carry the `freigabe_id` for redemption are unchanged.
+- ✅ **Judgement rule aligned with decision W14** — agents in `policy_mode = service` must send `urteil.empfehlung` (non-empty), `gegenargumente` and `unsicherheiten` (lists with at least one entry; write `keine erkannt` if nothing was found) and `konfidenz` (0..1). Incomplete judgements are refused locally with `INCOMPLETE_JUDGEMENT` naming the field, instead of by the Policy Manager with an audit entry. The `agent_context` schema description names all four fields.
+- 📐 **Assumptions resolved** — the request bodies of `approve` / `reject` / `consume` are confirmed by PolicyManager `docs/API.md` §4 (P5); the `ASSUMPTION` markers are gone.
+- 🧪 6 new tests (448 total).
+
 ### v1.18.0 (2026-10-19) — SPEC-MCP Phase 4: broker tokens as Tool Broker adapter
 Implements Phase 4 of the `soar_mcp_server` rebuild specification (epic [#165](https://github.com/abuis78/soar_mcp_server/issues/165)); decision OQ-3 (2026-10-19): the Tool Broker reads SOAR through this server as an adapter. **No change for human, agent or legacy tokens.**
 - 🔒 **Broker allow-list (MCP-L03)** — `mint mcp token` with `principal_type = broker` requires `allowed_tools`; entries outside `READ_ONLY_TOOLS` are dropped and reported (`dropped_tools`); an empty result refuses the mint.
