@@ -43,6 +43,13 @@ except Exception:  # noqa: BLE001
     lauf_id_from_arguments = None  # type: ignore[assignment]
 
 try:
+    from policy.client import approval_ref
+except Exception:  # noqa: BLE001
+    def approval_ref(freigabe_id: object) -> str:  # type: ignore[no-redef]
+        """Fallback (PM-F42): never let a raw approval id reach the audit log."""
+        return "<redacted>" if freigabe_id else "-"
+
+try:
     from soar_mcp_tokens import Principal, TokenStore, TokenVerification, sanitise_args_for_audit
 except Exception:  # noqa: BLE001
     Principal = None  # type: ignore[misc,assignment]
@@ -538,11 +545,16 @@ class SoarMcpRestHandler(dict):
     def _audit_tool_call(token_verification, tool_name: str,
                          arguments: dict, *, outcome: str) -> None:
         """Emit a structured audit line. Never logs the token itself."""
+        safe_args = sanitise_args_for_audit(arguments)
+        if isinstance(safe_args, dict) and safe_args.get("freigabe_id"):
+            # PM-F42 / S14: approval ids never in clear text; the hash equals the
+            # Policy Manager's freigabe_hash, so the audits still correlate.
+            safe_args["freigabe_id"] = "#" + approval_ref(safe_args["freigabe_id"])
         audit_logger.info(
             "[SOAR MCP] tool_call outcome=%s tool=%s %s args=%s",
             outcome, tool_name,
             SoarMcpRestHandler._audit_identity(token_verification, arguments),
-            json.dumps(sanitise_args_for_audit(arguments), default=str)[:500],
+            json.dumps(safe_args, default=str)[:500],
         )
 
     @staticmethod

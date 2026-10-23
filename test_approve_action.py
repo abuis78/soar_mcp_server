@@ -213,6 +213,23 @@ class ApproveActionCatalogTest(unittest.TestCase):
         self.assertNotIn("approve_action", self._names(_tv("agent", "a1")))
         self.assertNotIn("approve_action", self._names(_tv("broker")))
 
+    def test_tool_call_audit_never_carries_the_raw_freigabe_id(self):
+        """PM-F42 review of #172: approve_action(freigabe_id=...) and redemptions
+        <tool>(..., freigabe_id=...) reach the audit log as #<approval_ref>."""
+        cfg = McpServerConfig()
+        cfg.enabled_tools = set(ALL_TOOLS)
+        h = SoarMcpRestHandler.__new__(SoarMcpRestHandler)
+        for tool, args in (("approve_action", {"freigabe_id": "ap-7731"}),
+                           ("add_case_note", {"case_id": 1, "note": "n", "freigabe_id": "ap-7731"})):
+            with self.subTest(tool=tool):
+                with patch("soar_mcp_handler.call_tool", return_value="fine"), \
+                        self.assertLogs("soar_mcp.audit", level="INFO") as cm:
+                    h._handle_tools_call({"name": tool, "arguments": args}, _FakeClient(), cfg, _tv("mensch"))
+                log = "\n".join(cm.output)
+                self.assertIn("tool_call", log)
+                self.assertIn("#" + approval_ref("ap-7731"), log)
+                self.assertNotIn("ap-7731", log)
+
     def test_call_by_agent_or_broker_is_rejected(self):
         cfg = McpServerConfig()
         cfg.enabled_tools = set(ALL_TOOLS)
