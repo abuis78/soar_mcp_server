@@ -8,6 +8,7 @@ SSL-context construction with unusable dummy files.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import tempfile
@@ -32,7 +33,9 @@ from policy.client import (
     PolicyClientError,
     PolicyDecision,
     StubPolicyClient,
+    approval_ref,
     build_policy_client,
+    redact_path,
 )
 from soar_mcp_config import McpServerConfig
 
@@ -288,6 +291,29 @@ class HttpPolicyClientTest(unittest.TestCase):
             self.client.consume("ap-1", {})
         self.assertEqual(cm.exception.kind, "http")
 
+    def test_error_texts_never_carry_the_approval_id(self):
+        """PM-F42 / S14: PolicyClientError.reason shows #<approval_ref>, never the id."""
+        self.pm.route("POST", "/v1/approvals/ap-1/consume", 409, {"error": "expired"})
+        self.pm.route("GET", "/v1/approvals/ap-1", 500, {})
+        for call in (lambda: self.client.consume("ap-1", {}), lambda: self.client.approval_status("ap-1"),
+                     lambda: self.client.approve("ap-1", "bob")):
+            with self.assertRaises(PolicyClientError) as cm:
+                call()
+            self.assertNotIn("ap-1", cm.exception.reason)
+            self.assertIn("/v1/approvals/#" + approval_ref("ap-1"), cm.exception.reason)
+
+    def test_logs_carry_the_approval_ref_not_the_id(self):
+        self.pm.route("POST", "/v1/decide", 200, EXAMPLE_DECISION)
+        self.pm.route("POST", "/v1/approvals/ap-1/consume", 200, {"gueltig": True})
+        with self.assertLogs("soar_mcp.policy_client", level="INFO") as cm:
+            d = self.client.decide({})
+            self.client.consume("ap-1", {})
+        log = "\n".join(cm.output)
+        self.assertIn("freigabe_ref=" + approval_ref(d.freigabe_id), log)
+        self.assertIn("freigabe_ref=" + approval_ref("ap-1"), log)
+        self.assertNotIn(d.freigabe_id, log)
+        self.assertNotIn("ap-1", log)
+
     def test_malformed_freigabe_id_or_approver_never_hits_the_wire(self):
         for bad in ("../admin/halt", "ap 1", "", "a" * 200, None):
             with self.assertRaises(PolicyClientError):
@@ -424,6 +450,22 @@ class StubPolicyClientTest(unittest.TestCase):
         stub = StubPolicyClient(approvals={"ap-1": {}})
         self.assertEqual(stub.reject("ap-1", "bob").status, "rejected")
         self.assertEqual(stub.approve("ap-1", "carol").code, CODE_NOT_APPROVED)
+
+
+class ApprovalRefTest(unittest.TestCase):
+    def test_ref_is_sha256_prefix_like_the_policy_manager(self):
+        self.assertEqual(approval_ref("ap-1"), hashlib.sha256(b"ap-1").hexdigest()[:16])
+        self.assertEqual(len(approval_ref("ap-5521")), 16)
+        self.assertEqual(approval_ref(""), "-")
+        self.assertEqual(approval_ref(None), "-")
+
+    def test_redact_path_replaces_ids_only_inside_approval_paths(self):
+        ref = approval_ref("ap-1")
+        self.assertEqual(redact_path("POST /v1/approvals/ap-1/consume -> HTTP 409"),
+                         f"POST /v1/approvals/#{ref}/consume -> HTTP 409")
+        self.assertEqual(redact_path("GET /v1/approvals/ap-1"), f"GET /v1/approvals/#{ref}")
+        self.assertEqual(redact_path("POST /v1/decide -> HTTP 500"), "POST /v1/decide -> HTTP 500")
+        self.assertEqual(redact_path("GET /v1/halt"), "GET /v1/halt")
 
 
 class BuildPolicyClientTest(unittest.TestCase):

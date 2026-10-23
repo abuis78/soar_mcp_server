@@ -35,6 +35,7 @@ Only the standard library is used (SOAR app packaging, PM-N01 spirit).
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import re
@@ -47,6 +48,24 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Optional, Protocol, Union
 
 logger = logging.getLogger("soar_mcp.policy_client")
+
+
+def approval_ref(freigabe_id: object) -> str:
+    """Reference for an approval id in logs and error texts (PM-F42 / S14):
+    a sha256 prefix, never the id itself. Identical to ``freigabe_hash`` in
+    the Policy Manager audit and in ``pending_approvals``, so lines on both
+    sides correlate. Empty id -> ``"-"``."""
+    text = str(freigabe_id or "")
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16] if text else "-"
+
+
+_APPROVAL_IN_PATH = re.compile(r"(/v1/approvals/)([^/?#\s\"']+)")
+
+
+def redact_path(text: str) -> str:
+    """Replace approval ids in URL paths by ``#<approval_ref>`` (PM-F42)."""
+    return _APPROVAL_IN_PATH.sub(
+        lambda m: m.group(1) + "#" + approval_ref(urllib.parse.unquote(m.group(2))), text)
 
 # Gate names exactly as the Policy Manager returns them (PM spec §5 example,
 # identical to policy/policy_layer.py Gate names).
@@ -350,32 +369,33 @@ class HttpPolicyClient:
             data = json.dumps(body, default=str).encode("utf-8")
             headers["Content-Type"] = "application/json"
         req = urllib.request.Request(self.base_url + path, data=data, headers=headers, method=method)
+        shown = f"{method} {redact_path(path)}"  # PM-F42: never the raw approval id
         ctx = self._ssl_context()
         try:
             with urllib.request.urlopen(req, timeout=self.timeout_s, context=ctx) as resp:
                 status = resp.status
                 raw = resp.read()
         except urllib.error.HTTPError as exc:
-            raise PolicyClientError(f"{method} {path} -> HTTP {exc.code}", "http") from exc
+            raise PolicyClientError(f"{shown} -> HTTP {exc.code}", "http") from exc
         except (socket.timeout, TimeoutError) as exc:
-            raise PolicyClientError(f"{method} {path} timed out after {self.timeout_s}s", "timeout") from exc
+            raise PolicyClientError(f"{shown} timed out after {self.timeout_s}s", "timeout") from exc
         except urllib.error.URLError as exc:
             reason = exc.reason
             if isinstance(reason, (socket.timeout, TimeoutError)):
-                raise PolicyClientError(f"{method} {path} timed out after {self.timeout_s}s", "timeout") from exc
+                raise PolicyClientError(f"{shown} timed out after {self.timeout_s}s", "timeout") from exc
             if isinstance(reason, ssl.SSLError):
-                raise PolicyClientError(f"{method} {path} TLS failure", "tls") from exc
-            raise PolicyClientError(f"{method} {path} unreachable ({type(reason).__name__})", "unreachable") from exc
+                raise PolicyClientError(f"{shown} TLS failure", "tls") from exc
+            raise PolicyClientError(f"{shown} unreachable ({type(reason).__name__})", "unreachable") from exc
         except (ssl.SSLError, OSError) as exc:
-            raise PolicyClientError(f"{method} {path} unreachable ({type(exc).__name__})", "unreachable") from exc
+            raise PolicyClientError(f"{shown} unreachable ({type(exc).__name__})", "unreachable") from exc
         if status != 200:
-            raise PolicyClientError(f"{method} {path} -> HTTP {status}", "http")
+            raise PolicyClientError(f"{shown} -> HTTP {status}", "http")
         try:
             payload = json.loads(raw.decode("utf-8"))
         except (UnicodeDecodeError, ValueError) as exc:
-            raise PolicyClientError(f"{method} {path} returned invalid JSON", "contract") from exc
+            raise PolicyClientError(f"{shown} returned invalid JSON", "contract") from exc
         if not isinstance(payload, dict):
-            raise PolicyClientError(f"{method} {path} returned a non-object body", "contract")
+            raise PolicyClientError(f"{shown} returned a non-object body", "contract")
         return payload
 
     # -- PolicyClient ------------------------------------------------------
@@ -385,8 +405,8 @@ class HttpPolicyClient:
             raise PolicyClientError("decide request must be a dict", "contract")
         payload = self._request("POST", _PATH_DECIDE, request)
         decision = PolicyDecision.from_response(payload)
-        logger.info("[soar_mcp.policy_client] decide gate=%s entscheidung_id=%s freigabe_id=%s code=%s",
-                    decision.gate, decision.entscheidung_id or "-", decision.freigabe_id or "-",
+        logger.info("[soar_mcp.policy_client] decide gate=%s entscheidung_id=%s freigabe_ref=%s code=%s",
+                    decision.gate, decision.entscheidung_id or "-", approval_ref(decision.freigabe_id),
                     decision.code or "-")
         return decision
 
@@ -419,8 +439,8 @@ class HttpPolicyClient:
             raise PolicyClientError("consume request must be a dict", "contract")
         payload = self._request("POST", _PATH_APPROVALS + fid + "/consume", request)
         result = ConsumeResult.from_response(payload)
-        logger.info("[soar_mcp.policy_client] consume freigabe_id=%s ok=%s code=%s",
-                    fid, result.ok, result.code or "-")
+        logger.info("[soar_mcp.policy_client] consume freigabe_ref=%s ok=%s code=%s",
+                    approval_ref(fid), result.ok, result.code or "-")
         return result
 
     def health(self) -> dict:
