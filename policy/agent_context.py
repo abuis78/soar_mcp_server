@@ -53,9 +53,11 @@ AGENT_CONTEXT_SCHEMA: dict = {
     "description": (
         "Agent-run context (SPEC-MCP MCP-W07). REQUIRED when the calling MCP token "
         "has principal_type 'agent' and the Policy Manager decides this call: "
-        "beleg_ids (evidence) and urteil (judgement with gegenargumente, "
-        "unsicherheiten, konfidenz) are mandatory, otherwise the call is refused "
-        "with NO_EVIDENCE / INCOMPLETE_JUDGEMENT. Optional for human tokens."
+        "beleg_ids (evidence) and a complete urteil (judgement, decision W14) are "
+        "mandatory: empfehlung (non-empty), gegenargumente and unsicherheiten (each a "
+        "list with at least one non-empty entry; never an empty list - write "
+        "'keine erkannt' if nothing was found) and konfidenz (0..1). Otherwise the "
+        "call is refused with NO_EVIDENCE / INCOMPLETE_JUDGEMENT. Optional for human tokens."
     ),
     "properties": {
         "lauf_id": {"type": "string", "maxLength": MAX_ID_LEN,
@@ -73,12 +75,18 @@ AGENT_CONTEXT_SCHEMA: dict = {
             "type": "object",
             "description": "The agent's judgement (D23).",
             "properties": {
-                "empfehlung": {"type": "string", "maxLength": MAX_TEXT_LEN},
+                "empfehlung": {"type": "string", "maxLength": MAX_TEXT_LEN,
+                               "description": "Recommended action (required for agents, non-empty)."},
                 "gegenargumente": {"type": "array", "items": {"type": "string", "maxLength": MAX_TEXT_LEN},
-                                   "maxItems": MAX_LIST_ITEMS},
+                                   "maxItems": MAX_LIST_ITEMS,
+                                   "description": "Counter-arguments (required for agents, at least one "
+                                                  "non-empty entry, e.g. 'keine erkannt')."},
                 "unsicherheiten": {"type": "array", "items": {"type": "string", "maxLength": MAX_TEXT_LEN},
-                                   "maxItems": MAX_LIST_ITEMS},
-                "konfidenz": {"type": "number", "minimum": 0, "maximum": 1},
+                                   "maxItems": MAX_LIST_ITEMS,
+                                   "description": "Uncertainties (required for agents, at least one "
+                                                  "non-empty entry, e.g. 'keine erkannt')."},
+                "konfidenz": {"type": "number", "minimum": 0, "maximum": 1,
+                              "description": "Confidence 0..1 (required for agents)."},
             },
             "additionalProperties": False,
         },
@@ -111,6 +119,15 @@ def _str_list(value: object, name: str, max_len: int) -> list[str]:
     if len(value) > MAX_LIST_ITEMS:
         raise _Invalid(f"{name} has more than {MAX_LIST_ITEMS} items")
     return [_str(v, f"{name}[{i}]", max_len) for i, v in enumerate(value)]
+
+
+def _non_empty(value: object) -> bool:
+    """W14: a non-blank string, or a list with at least one non-blank entry."""
+    if isinstance(value, str):
+        return bool(value.strip())
+    if isinstance(value, list):
+        return any(isinstance(v, str) and v.strip() for v in value)
+    return False
 
 
 def _validate_urteil(raw: object) -> dict:
@@ -193,9 +210,20 @@ def _validate(raw: object, *, required: bool) -> tuple[Optional[dict], Optional[
         if not out.get("beleg_ids"):
             return None, NO_EVIDENCE, "agent requests need at least one beleg_id (evidence)"
         urteil = out.get("urteil") or {}
-        missing = [k for k in ("gegenargumente", "unsicherheiten", "konfidenz") if k not in urteil]
-        if missing:
-            return None, INCOMPLETE_JUDGEMENT, f"urteil is missing {missing}"
+        # Decision W14 (PolicyManager KONZEPT.md, D23): all four fields, no empty
+        # list - the engine denies the same with INCOMPLETE_JUDGEMENT, so refuse
+        # here where the agent can still correct it without an audit entry.
+        missing = [k for k in ("empfehlung", "gegenargumente", "unsicherheiten", "konfidenz")
+                   if k not in urteil]
+        empty = [k for k in ("empfehlung", "gegenargumente", "unsicherheiten")
+                 if k in urteil and not _non_empty(urteil[k])]
+        if missing or empty:
+            parts = []
+            if missing:
+                parts.append(f"missing {missing}")
+            if empty:
+                parts.append(f"empty {empty} (write 'keine erkannt' instead of an empty list)")
+            return None, INCOMPLETE_JUDGEMENT, "urteil is " + "; ".join(parts)
     return out, None, ""
 
 
