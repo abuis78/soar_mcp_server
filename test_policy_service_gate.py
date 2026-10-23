@@ -143,6 +143,24 @@ class DecideFlowTest(_Base):
         self.assertIn("entscheidung_id=pm-9", out)
         self.assertIn("halt->DENY", out)
 
+    def test_decision_log_carries_single_hash_or_dash(self):
+        """PM-F42 review of #172: freigabe_ref is sha256(id)[:16] once (correlates with the
+        Policy Manager's freigabe_hash), and "-" when the decision carries no id."""
+        self.stub.decision = PolicyDecision(entscheidung_id="pm-10", gate="APPROVE_2PERSON",
+                                            freigaben_noetig=2, freigabe_id="ap-5521")
+        with self.assertLogs("soar_mcp.policy", level="INFO") as cm:
+            self.call("delete_container", {"container_id": 5, "confirm": True})
+        decision_lines = [l for l in cm.output if "service decision" in l]
+        self.assertEqual(len(decision_lines), 1)
+        self.assertIn(f"freigabe_ref={approval_ref('ap-5521')} ", decision_lines[0])
+        self.assertNotIn(approval_ref(approval_ref("ap-5521")), decision_lines[0])
+        self.assertNotIn("ap-5521", decision_lines[0])
+        self.stub.decision = PolicyDecision(entscheidung_id="pm-11", gate="ALLOW")
+        with self.assertLogs("soar_mcp.policy", level="INFO") as cm:
+            self.call("add_case_note", {"case_id": 1, "note": "n"})
+        decision_lines = [l for l in cm.output if "service decision" in l]
+        self.assertIn("freigabe_ref=- ", decision_lines[0])
+
     def test_approval_gate_holds_and_never_executes(self):
         self.stub.decision = PolicyDecision(entscheidung_id="pm-10", gate="APPROVE_2PERSON",
                                             freigaben_noetig=2, freigabe_id="ap-5521",

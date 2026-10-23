@@ -280,7 +280,7 @@ def decide_write_tool(
 
     logger.info("[soar_mcp.policy] service decision gate=%s entscheidung_id=%s freigabe_ref=%s code=%s "
                 "tool=%s %s policy_version=%s",
-                decision.gate, decision.entscheidung_id, approval_ref(approval_ref(decision.freigabe_id)),
+                decision.gate, decision.entscheidung_id, approval_ref(decision.freigabe_id),
                 decision.code or "-", tool_name, ident, decision.policy_version or "-")
 
     if decision.gate == "ALLOW":
