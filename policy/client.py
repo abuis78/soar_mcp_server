@@ -24,11 +24,11 @@ MUST treat it as DENY. There is no retry and no fallback to in-app logic.
 ``halt_status`` is the one exception: it never raises, an unknown state IS
 "halted" (PM-F31).
 
-Still marked ASSUMPTION (not defined by policy_client.base, which has no HTTP
-transport yet; confirm against PolicyManager P3 ``ServicePolicyClient``):
-the request bodies of ``approve``/``reject`` ({"freigebender": <id>}) and of
-``consume`` (the decide request, as ``consume(approval_id, request)`` binds
-the approval to the unchanged action).
+Request bodies confirmed against PolicyManager docs/API.md §4 (P5, tag rp/p5-2):
+``approve``/``reject`` send {"freigebender": <id>}, ``consume`` sends the decide
+request (``consume(approval_id, request)`` binds the approval to the unchanged
+action). This module is replaced by the ``policy_manager`` wheel
+(``ServicePolicyClient``) in a later step; the wire format is the same.
 
 Only the standard library is used (SOAR app packaging, PM-N01 spirit).
 """
@@ -413,7 +413,7 @@ class HttpPolicyClient:
     def approve(self, freigabe_id: str, approver: str) -> ApprovalStatus:
         """One authenticated person approves (PM-F21). Self-approval and
         duplicates are judged by the Policy Manager (code in the status).
-        ASSUMPTION: body {"freigebender": <approver>}."""
+        Body {"freigebender": <approver>} (PolicyManager API.md §4)."""
         fid = _check_id(freigabe_id, "freigabe_id")
         who = _check_approver(approver)
         payload = self._request("POST", _PATH_APPROVALS + fid + "/approve", {"freigebender": who})
