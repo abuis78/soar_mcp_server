@@ -293,6 +293,12 @@
             "required": false,
             "order": 49
         },
+        "approval_playbook": {
+            "description": "Approval playbook (policy_mode = service). Name of a SOAR input playbook (e.g. pm_freigabe from soar_pm_admin) started on the case when a write tool is held for approval (APPROVE_1CLICK / APPROVE_2PERSON); it asks the approval group. EMPTY (default) = off: only the analyst notice. Residual risk: the raw freigabe_id is readable in that playbook run's input.",
+            "data_type": "string",
+            "required": false,
+            "order": 96
+        },
         "tool_list_apps": {
             "description": "READ \u2014 list_apps: List installed SOAR apps/connectors (name, vendor, supported actions). Used by the playbook-builder skill for connector discovery.",
             "data_type": "boolean",

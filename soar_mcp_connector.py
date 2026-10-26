@@ -180,7 +180,7 @@ class SoarMcpConnector(BaseConnector):
         # Empty string is meaningful for policy_mode ("" = today's path).
         policy_conn = {}
         for key in ("policy_mode", "policy_service_url", "policy_client_cert",
-                    "policy_client_key", "policy_ca"):
+                    "policy_client_key", "policy_ca", "approval_playbook"):
             val = asset_cfg.get(key)
             policy_conn[key] = str(val).strip() if val is not None else None
         timeout_val = asset_cfg.get("policy_timeout_s")
@@ -216,6 +216,7 @@ class SoarMcpConnector(BaseConnector):
             "policy_client_cert": policy_conn["policy_client_cert"],
             "policy_client_key": policy_conn["policy_client_key"],
             "policy_ca": policy_conn["policy_ca"],
+            "approval_playbook": policy_conn["approval_playbook"],
             "ssl_verify": ssl_verify,
             "asset_name": self._asset_name,
             "base_url": self._base_url,
