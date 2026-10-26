@@ -144,6 +144,7 @@ path segment is the SOAR asset name, for example `mcp`.
 | **policy_client_cert** | _(empty)_ | v1.16.0+ — mTLS client certificate: file **path** on the SOAR host (PEM). Never the content. |
 | **policy_client_key** | _(empty)_ | v1.16.0+ — mTLS client key: file path on the SOAR host (PEM). Never logged. |
 | **policy_ca** | _(empty)_ | v1.16.0+ — CA bundle (file path) used to verify the Policy Manager certificate. Empty = system trust store. |
+| **approval_playbook** | _(empty)_ | v1.19.0+ — name of a SOAR **input** playbook (e.g. `pm_freigabe` from soar_pm_admin) started on the case when a write tool is held for approval (policy_mode = `service`). Empty = off. See "Approvals" below. |
 | **tool_approve_action** | `false` | v1.17.0+ — enable the approval tool `approve_action(freigabe_id)` (policy_mode = `service`). Human analysts with a scoped MCP token approve held actions; agent and broker tokens never see it. |
 
 **Tool Selection (Checkboxes):**
@@ -377,6 +378,7 @@ All configuration is managed from **SOAR UI → Apps → SOAR MCP Server → Ass
 | **policy_service_url** | Text | Policy Manager base URL, `https` only (v1.16.0+) |
 | **policy_timeout_s** | Numeric | Policy Manager timeout in seconds, default 5 (v1.16.0+) |
 | **policy_client_cert** / **policy_client_key** / **policy_ca** | Text | mTLS material as file paths on the SOAR host (v1.16.0+) |
+| **approval_playbook** | Text | Input playbook started on the case for held approvals (v1.19.0+, default off) |
 | **tool_*** | Boolean × 45 | Enable/disable each tool individually |
 | **tool_approve_action** | Boolean | Approval tool for held actions in `policy_mode = service` (v1.17.0+, default off) |
 
@@ -512,6 +514,22 @@ and "two different users"):
 2. **Re-call the tool** with the same arguments plus `freigabe_id` once all approvals are in —
    the compatibility path for agents and clients without a UI. Pending approvals are reported
    as `erteilt/noetig`; a changed tool or arguments is refused (`ACTION_CHANGED`).
+
+**Approval request in SOAR (v1.19.0+, opt-in):** set the asset field `approval_playbook` to the
+name of a SOAR **input** playbook (e.g. `pm_freigabe` from soar_pm_admin). When a write tool with a
+case (`case_id` / `container_id`) is held, the app starts that playbook on the case with seven
+string inputs: `freigabe_id`, `noetig`, `initiator`, `art`, `ziel` (comma-separated),
+`begruendung_kurz`, `ablauf`. The playbook asks the approval group and records the responder as
+approver via the Policy Manager. The start is an internal REST call (`POST /rest/playbook_run`,
+`inputs` as a JSON string), not a tool call: no gate, no second decision; it runs with the SOAR
+token of the requesting call, so that SOAR user needs permission to run playbooks. The ⏸ message
+says whether the request was sent. If the start fails (playbook not found, HTTP error), the hold
+stands and approvers use `approve_action`; nothing is executed. Without a case
+(`create_container`) only the ⏸ message is shown. Logs carry only `freigabe_ref`.
+**Residual risk (accepted):** the raw `freigabe_id` is readable in that playbook run's input by
+anyone who can read the case. The id alone grants nothing: approving and redeeming need the
+Policy Manager client certificates on the hosts. The playbook must not echo it (no debug print,
+note or artifact).
 
 Approval in `service` mode is exactly one `consume` (single use); unreachable Policy Manager,
 `gueltig = false`, rejected/expired/consumed approvals never execute. In the default mode the

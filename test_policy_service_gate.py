@@ -349,6 +349,24 @@ class ApprovalPlaybookTest(_Base):
         self.assertIn(f"freigabe_ref={approval_ref('ap-7788')}", lines[0])
         self.assertNotIn("ap-7788", "\n".join(cm.output))
 
+    def test_notice_says_request_was_sent(self):
+        out = self.call("update_case_status", {"case_id": 5, "status": "closed"}, cfg=self._cfg_on())
+        self.assertIn("approval request was sent", out)
+        self.assertIn('approve_action(freigabe_id="ap-7788")', out)
+
+    def test_notice_says_request_failed(self):
+        self.client = _ApprovalClient(post_err="HTTP 500")
+        out = self.call("update_case_status", {"case_id": 5, "status": "closed"}, cfg=self._cfg_on())
+        self.assertIn("could not be sent to SOAR", out)
+        self.assertIn('approve_action(freigabe_id="ap-7788")', out)
+
+    def test_notice_unchanged_when_not_attempted(self):
+        off = self.call("update_case_status", {"case_id": 5, "status": "closed"})
+        no_case = self.call("create_container", {"name": "x", "label": "test"}, cfg=self._cfg_on())
+        for out in (off, no_case):
+            self.assertNotIn("approval request", out)
+            self.assertNotIn("approval playbook", out)
+
     def test_start_is_not_a_tool_call_and_runs_no_second_decide(self):
         self.call("update_case_status", {"case_id": 5, "status": "closed"}, cfg=self._cfg_on())
         self.assertEqual(len(self.stub.calls), 1)

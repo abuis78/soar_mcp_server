@@ -309,10 +309,12 @@ def decide_write_tool(
         logger.error("[soar_mcp.policy] service held action not stored freigabe_ref=%s: %s",
                      approval_ref(decision.freigabe_id), type(exc).__name__)
         stored = False
+    requested = None
     if stored:
-        request_approval_in_soar(client, config, case_id, decision, tool_name, needed,
-                                 request, summary, principal, start_approval)
-    return hold_message(decision, tool_name, needed, summary, stored=stored)
+        requested = request_approval_in_soar(client, config, case_id, decision, tool_name, needed,
+                                             request, summary, principal, start_approval)
+    return hold_message(decision, tool_name, needed, summary, stored=stored,
+                        approval_requested=requested)
 
 
 def request_approval_in_soar(client: Any, config: Any, case_id: Any, decision: PolicyDecision,
@@ -607,7 +609,7 @@ def _forget(store: HeldActionStore, fid: str) -> None:
 
 
 def hold_message(decision: PolicyDecision, tool_name: str, needed: int, summary: str = "", *,
-                 stored: bool = True) -> str:
+                 stored: bool = True, approval_requested: Optional[bool] = None) -> str:
     fid = decision.freigabe_id
     text = (
         f"⏸ Approval required by policy — {needed} distinct approver(s) ({decision.gate}).\n"
@@ -616,6 +618,11 @@ def hold_message(decision: PolicyDecision, tool_name: str, needed: int, summary:
         + (f"  Reason: {summary}\n" if summary else "")
         + "  Nothing has been executed.\n"
     )
+    if approval_requested is True:
+        text += "  The approval request was sent to the approval group in SOAR (approval playbook started).\n"
+    elif approval_requested is False:
+        text += ("  The approval request could not be sent to SOAR (approval playbook not started);\n"
+                 "  ask an approver to use approve_action directly.\n")
     if not stored:
         return text + ("  The held action could not be stored on the SOAR host; the approval cannot "
                        "be redeemed. Fix the app's local/ directory and request the action again.")
