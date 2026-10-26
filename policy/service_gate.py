@@ -53,6 +53,7 @@ _GATE_ARGS: frozenset[str] = frozenset({"agent_context", "approval_token", "conf
 _NON_TARGET_IDS: frozenset[str] = frozenset({"lauf_id", "broker_aufruf_id"})
 
 _MAX_BEGRUENDUNG = 5
+_MAX_APPROVAL_REASON = 500  # chars of the decision summary sent as begruendung_kurz
 
 # Client cache keyed on the connection parameters; tests may inject a client.
 _client_cache: dict[tuple, PolicyClient] = {}
@@ -202,6 +203,7 @@ def decide_write_tool(
     principal: Any,
     *,
     collect_values: Optional[Callable[[Any, Any, int], list]] = None,
+    start_approval: Optional[Callable[[Any, Any, int, dict], Optional[str]]] = None,
 ) -> Optional[str]:
     """Ask the Policy Manager before a write tool runs (mode ``service``).
 
@@ -209,7 +211,9 @@ def decide_write_tool(
     message. Never raises; every failure path returns a ⛔ message.
     ``collect_values(client, config, case_id) -> list`` gathers the case's
     artifact values (MCP-W03); it is injected to keep this module free of
-    SOAR-API imports.
+    SOAR-API imports. ``start_approval(client, config, case_id, inputs) ->
+    None | error`` starts the approval playbook (proposal B, asset option
+    ``approval_playbook``); injected for the same reason.
     """
     args = arguments or {}
     ident = _ident(principal)
@@ -305,7 +309,48 @@ def decide_write_tool(
         logger.error("[soar_mcp.policy] service held action not stored freigabe_ref=%s: %s",
                      approval_ref(decision.freigabe_id), type(exc).__name__)
         stored = False
+    if stored:
+        request_approval_in_soar(client, config, case_id, decision, tool_name, needed,
+                                 request, summary, principal, start_approval)
     return hold_message(decision, tool_name, needed, summary, stored=stored)
+
+
+def request_approval_in_soar(client: Any, config: Any, case_id: Any, decision: PolicyDecision,
+                             tool_name: str, needed: int, request: dict, summary: str,
+                             principal: Any,
+                             start_approval: Optional[Callable[[Any, Any, int, dict], Optional[str]]]
+                             ) -> Optional[bool]:
+    """Start the approval playbook on the case (proposal B). Returns None when
+    not attempted (option off, no freigabe_id or no case), True when started,
+    False when the start failed. Never raises; the hold stands either way.
+    The raw freigabe_id goes only into the playbook input, logs carry the ref."""
+    name = str(getattr(config, "approval_playbook", "") or "").strip()
+    fid = decision.freigabe_id
+    if (not name or start_approval is None or not fid
+            or decision.gate not in ("APPROVE_1CLICK", "APPROVE_2PERSON")
+            or not isinstance(case_id, int) or isinstance(case_id, bool) or case_id <= 0):
+        return None
+    ziel = (request.get("aktion") or {}).get("ziel") or []
+    inputs = {
+        "freigabe_id": str(fid),
+        "noetig": str(needed),
+        "initiator": principal_identity(principal),
+        "art": tool_name,
+        "ziel": ",".join(str(z) for z in ziel),
+        "begruendung_kurz": summary[:_MAX_APPROVAL_REASON],
+        "ablauf": str(decision.ablauf or ""),
+    }
+    try:
+        err = start_approval(client, config, case_id, inputs)
+    except Exception as exc:  # noqa: BLE001 — the hold stands; only the notification is lost
+        err = type(exc).__name__
+    if err:
+        logger.warning("[soar_mcp.policy] service approval playbook not started freigabe_ref=%s case=%s: %s",
+                       approval_ref(fid), case_id, str(err).replace(str(fid), "#" + approval_ref(fid)))
+        return False
+    logger.info("[soar_mcp.policy] service approval playbook started freigabe_ref=%s case=%s",
+                approval_ref(fid), case_id)
+    return True
 
 
 def _agent_halted(pm: PolicyClient, principal: Any, tool_name: str, ident: str) -> Optional[str]:

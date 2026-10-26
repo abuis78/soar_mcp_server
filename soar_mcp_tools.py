@@ -5377,6 +5377,26 @@ def _collect_case_artifact_values(client: SoarApiClient, config: McpServerConfig
     return values
 
 
+def _start_approval_playbook(client: SoarApiClient, config: McpServerConfig,
+                             case_id: int, inputs: dict) -> Optional[str]:
+    """Start the approval input playbook on a case (proposal B). Internal REST
+    call, not a tool call: no gate, no second decide. ``inputs`` goes as a
+    JSON-encoded string (SOAR On-Prem 8.x run-playbook API). Returns None on
+    success or an error string; the caller logs it with the freigabe_ref only."""
+    pid = _resolve_playbook_id_by_name(config.approval_playbook, client, config)
+    if not isinstance(pid, int):
+        return str(pid)
+    body = {
+        "container_id": case_id,
+        "playbook_id": pid,
+        "scope": "new",
+        "run": True,
+        "inputs": json.dumps(inputs),
+    }
+    _data, err = client.post("playbook_run", body)
+    return f"playbook_run failed: {err}" if err else None
+
+
 def _resolve_playbook_id_by_name(name: str, client: SoarApiClient, config: McpServerConfig):
     """Resolve a playbook name to its numeric ID (issue #148).
 
@@ -5597,7 +5617,8 @@ def call_tool(
         if mode == POLICY_MODE_SERVICE:
             from policy.service_gate import decide_write_tool
             policy_msg = decide_write_tool(tool_name, arguments, client, config, principal,
-                                           collect_values=_collect_case_artifact_values)
+                                           collect_values=_collect_case_artifact_values,
+                                           start_approval=_start_approval_playbook)
         else:
             policy_msg = _policy_gate(tool_name, arguments, client, config, actor_id, principal)
         if policy_msg is not None:
