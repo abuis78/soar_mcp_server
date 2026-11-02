@@ -706,6 +706,14 @@ tail -f /var/log/phantom/soar/phantom.log | grep soar_mcp_handler
 
 ## Changelog
 
+### v1.19.0 (2026-11-02) — approval request in SOAR (approval_playbook)
+New opt-in feature for `policy_mode = service`. **No behaviour change while `approval_playbook` is empty (default).**
+- ✅ **New asset field `approval_playbook`** (also `mcp.conf [policy] approval_playbook`) — name of a SOAR input playbook (e.g. `pm_freigabe` from soar_pm_admin). When a write tool with a case is held for approval (`APPROVE_1CLICK` / `APPROVE_2PERSON`), the app starts it on the case with seven string inputs (`freigabe_id`, `noetig`, `initiator`, `art`, `ziel`, `begruendung_kurz`, `ablauf`) so the approval group in SOAR learns about the pending approval.
+- ⚙️ **Internal REST call, not a tool call** — `POST /rest/playbook_run` with the numeric `playbook_id` (resolved by exact name) and `inputs` as a JSON object (SOAR 8.7 rejects a string). No gate and no second decision; it runs with the SOAR token of the requesting call.
+- 🛡️ **Hold always stands** — if the start fails, nothing is executed and the ⏸ message tells approvers to use `approve_action`. The ⏸ message says whether the request was sent. Logs carry only `freigabe_ref`.
+- ⚠️ **Accepted residual risk** — the raw `freigabe_id` is readable in that playbook run's input by anyone who can read the case; the id alone grants nothing.
+- 🧪 14 new tests (464 total).
+
 ### v1.18.2 (2026-10-23) — PM-F42 follow-up: tool-call audit, decision log hash
 Fixes two findings of the PolicyManager review of v1.18.1 (#172). **No behaviour change in the default `policy_mode`.**
 - 🔒 **Tool-call audit no longer carries the raw `freigabe_id` (PM-F42 / S14)** — `approve_action(freigabe_id=…)` and redemptions `<tool>(…, freigabe_id=…)` reach the `soar_mcp.audit` line as `#<approval_ref>` (`sha256(id)[:16]`, equal to the Policy Manager's `freigabe_hash`). v1.18.1 still wrote the id in clear text there.
