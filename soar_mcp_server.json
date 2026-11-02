@@ -8,8 +8,8 @@
     "product_version_regex": ".*",
     "publisher": "Andreas Buis",
     "license": "Copyright 2026 Andreas Buis",
-    "app_version": "1.18.2",
-    "utctime_updated": "2026-10-23T10:00:00.000000Z",
+    "app_version": "1.19.0",
+    "utctime_updated": "2026-11-02T10:00:00.000000Z",
     "package_name": "phantom_soar_mcp_server",
     "main_module": "soar_mcp_connector.py",
     "min_phantom_version": "8.5.0",
@@ -292,6 +292,12 @@
             "data_type": "string",
             "required": false,
             "order": 49
+        },
+        "approval_playbook": {
+            "description": "Approval playbook (policy_mode = service). Name of a SOAR input playbook (e.g. pm_freigabe from soar_pm_admin) started on the case when a write tool is held for approval (APPROVE_1CLICK / APPROVE_2PERSON); it asks the approval group. EMPTY (default) = off: only the analyst notice. Residual risk: the raw freigabe_id is readable in that playbook run's input.",
+            "data_type": "string",
+            "required": false,
+            "order": 96
         },
         "tool_list_apps": {
             "description": "READ \u2014 list_apps: List installed SOAR apps/connectors (name, vendor, supported actions). Used by the playbook-builder skill for connector discovery.",

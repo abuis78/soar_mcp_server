@@ -237,6 +237,10 @@ class McpServerConfig:
     policy_client_cert: str = ""
     policy_client_key: str = ""
     policy_ca: str = ""
+    # Approval playbook (proposal B, soar_pm_admin). Name of the SOAR input
+    # playbook started on the case when a write tool is held for approval in
+    # service mode. EMPTY (default) = off: only the analyst notice, as before.
+    approval_playbook: str = ""
 
     # Custom Function draft-write allowlist (#159). Repository (scm_id) values that
     # create/update_custom_function_draft may write to. EMPTY = no write allowed at
@@ -492,6 +496,7 @@ class McpConfigLoader:
         config.policy_client_cert = parser.get("policy", "client_cert", fallback="").strip()
         config.policy_client_key = parser.get("policy", "client_key", fallback="").strip()
         config.policy_ca = parser.get("policy", "ca", fallback="").strip()
+        config.approval_playbook = parser.get("policy", "approval_playbook", fallback="").strip()
         config.custom_function_write_scm_ids = self._parse_scm_ids(
             parser.get("custom_functions", "allowed_write_scm_ids", fallback=""))
         config.agent_read_exceptions = self._parse_agent_read_exceptions(
@@ -589,7 +594,7 @@ class McpConfigLoader:
         # -> keep the mcp.conf [policy] value. Empty string = explicitly unset
         # (policy_mode "" = today's path). Values are paths/URLs, never secrets.
         for key in ("policy_mode", "policy_service_url", "policy_client_cert",
-                    "policy_client_key", "policy_ca"):
+                    "policy_client_key", "policy_ca", "approval_playbook"):
             val = overrides.get(key)
             if val is not None:
                 setattr(config, key, str(val).strip().lower() if key == "policy_mode"

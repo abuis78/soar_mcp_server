@@ -237,6 +237,140 @@ class DecideFlowTest(_Base):
         self.assertIn("policy_version=abc", line)
 
 
+class _ApprovalClient(_FakeClient):
+    """Resolves the approval playbook by name and records playbook_run bodies."""
+
+    def __init__(self, post_err=None, playbooks=({"id": 841, "name": "pm_freigabe"},)):
+        super().__init__()
+        self.bodies = []
+        self.post_err = post_err
+        self.playbooks = list(playbooks)
+
+    def get(self, path, params=None):
+        if path == "playbook":
+            self.calls.append(("get", path))
+            return {"data": self.playbooks}, None
+        return super().get(path, params)
+
+    def post(self, path, body):
+        self.calls.append(("post", path))
+        self.bodies.append((path, body))
+        return ({}, self.post_err) if self.post_err else ({"playbook_run_id": 99}, None)
+
+
+class ApprovalPlaybookTest(_Base):
+    """Proposal B: on APPROVE_* the MCP starts the approval input playbook on the case."""
+
+    def setUp(self):
+        super().setUp()
+        self.client = _ApprovalClient()
+        self.stub.decision = PolicyDecision(entscheidung_id="pm-20", gate="APPROVE_2PERSON",
+                                            freigaben_noetig=2, freigabe_id="ap-7788",
+                                            ablauf="2099-01-01T00:00:00Z",
+                                            begruendung=({"regel": "r1", "gate": "APPROVE_2PERSON"},))
+
+    def _cfg_on(self, name="pm_freigabe"):
+        c = _cfg()
+        c.approval_playbook = name
+        return c
+
+    def _runs(self):
+        return [b for p, b in self.client.bodies if p == "playbook_run"]
+
+    def test_starts_input_playbook_with_seven_string_inputs(self):
+        out = self.call("update_case_status", {"case_id": 5, "status": "closed"}, cfg=self._cfg_on())
+        self.assertTrue(out.startswith("⏸"))
+        self.assertNotIn("ran:", out)
+        runs = self._runs()
+        self.assertEqual(len(runs), 1)
+        body = runs[0]
+        self.assertEqual((body["container_id"], body["playbook_id"], body["scope"], body["run"]),
+                         (5, 841, "new", True))
+        self.assertIsInstance(body["inputs"], dict)  # SOAR 8.7: object; a JSON string gives 400 (B3)
+        inputs = body["inputs"]
+        self.assertEqual(inputs, {
+            "freigabe_id": "ap-7788", "noetig": "2", "initiator": "alice", "art": "update_case_status",
+            "ziel": "case_id=5", "begruendung_kurz": "r1->APPROVE_2PERSON",
+            "ablauf": "2099-01-01T00:00:00Z"})
+        self.assertTrue(all(isinstance(v, str) for v in inputs.values()))
+        self.assertIsNotNone(self.held.get("ap-7788"))
+
+    def test_off_by_default_starts_nothing(self):
+        self.call("update_case_status", {"case_id": 5, "status": "closed"})
+        self.assertEqual(self._runs(), [])
+        self.assertNotIn(("get", "playbook"), self.client.calls)
+
+    def test_container_id_is_used_as_case(self):
+        self.call("create_artifact", {"container_id": 12, "name": "a"}, cfg=self._cfg_on())
+        self.assertEqual(self._runs()[0]["container_id"], 12)
+
+    def test_no_case_no_start(self):
+        self.call("create_container", {"name": "x", "label": "test"}, cfg=self._cfg_on())
+        self.assertEqual(self._runs(), [])
+
+    def test_allow_deny_and_store_failure_start_nothing(self):
+        for decision in (PolicyDecision(entscheidung_id="pm-1", gate="ALLOW"),
+                         PolicyDecision(entscheidung_id="pm-2", gate="DENY")):
+            self.stub.decision = decision
+            self.call("update_case_status", {"case_id": 5, "status": "closed"}, cfg=self._cfg_on())
+        self.stub.decision = PolicyDecision(entscheidung_id="pm-3", gate="APPROVE_1CLICK", freigabe_id="ap-1")
+        with patch.object(self.held, "put", side_effect=OSError("disk full")):
+            self.call("update_case_status", {"case_id": 5, "status": "closed"}, cfg=self._cfg_on())
+        self.stub.decision = PolicyDecision(entscheidung_id="pm-4", gate="APPROVE_1CLICK", freigabe_id="")
+        self.call("update_case_status", {"case_id": 5, "status": "closed"}, cfg=self._cfg_on())
+        self.assertEqual(self._runs(), [])
+
+    def test_start_failure_keeps_hold_and_logs_ref_only(self):
+        self.client = _ApprovalClient(post_err="HTTP 400 ap-7788 rejected")
+        with self.assertLogs("soar_mcp.policy", level="INFO") as cm:
+            out = self.call("update_case_status", {"case_id": 5, "status": "closed"}, cfg=self._cfg_on())
+        self.assertTrue(out.startswith("⏸"))
+        self.assertNotIn("ran:", out)
+        self.assertIsNotNone(self.held.get("ap-7788"))
+        lines = [l for l in cm.output if "approval playbook" in l]
+        self.assertEqual(len(lines), 1)
+        self.assertIn("not started", lines[0])
+        self.assertIn(f"freigabe_ref={approval_ref('ap-7788')}", lines[0])
+        self.assertNotIn("ap-7788", lines[0])
+
+    def test_unresolvable_name_keeps_hold(self):
+        self.client = _ApprovalClient(playbooks=())
+        out = self.call("update_case_status", {"case_id": 5, "status": "closed"}, cfg=self._cfg_on())
+        self.assertTrue(out.startswith("⏸"))
+        self.assertEqual(self._runs(), [])
+        self.assertIsNotNone(self.held.get("ap-7788"))
+
+    def test_started_log_carries_ref_only(self):
+        with self.assertLogs("soar_mcp.policy", level="INFO") as cm:
+            self.call("update_case_status", {"case_id": 5, "status": "closed"}, cfg=self._cfg_on())
+        lines = [l for l in cm.output if "approval playbook started" in l]
+        self.assertEqual(len(lines), 1)
+        self.assertIn(f"freigabe_ref={approval_ref('ap-7788')}", lines[0])
+        self.assertNotIn("ap-7788", "\n".join(cm.output))
+
+    def test_notice_says_request_was_sent(self):
+        out = self.call("update_case_status", {"case_id": 5, "status": "closed"}, cfg=self._cfg_on())
+        self.assertIn("approval request was sent", out)
+        self.assertIn('approve_action(freigabe_id="ap-7788")', out)
+
+    def test_notice_says_request_failed(self):
+        self.client = _ApprovalClient(post_err="HTTP 500")
+        out = self.call("update_case_status", {"case_id": 5, "status": "closed"}, cfg=self._cfg_on())
+        self.assertIn("could not be sent to SOAR", out)
+        self.assertIn('approve_action(freigabe_id="ap-7788")', out)
+
+    def test_notice_unchanged_when_not_attempted(self):
+        off = self.call("update_case_status", {"case_id": 5, "status": "closed"})
+        no_case = self.call("create_container", {"name": "x", "label": "test"}, cfg=self._cfg_on())
+        for out in (off, no_case):
+            self.assertNotIn("approval request", out)
+            self.assertNotIn("approval playbook", out)
+
+    def test_start_is_not_a_tool_call_and_runs_no_second_decide(self):
+        self.call("update_case_status", {"case_id": 5, "status": "closed"}, cfg=self._cfg_on())
+        self.assertEqual(len(self.stub.calls), 1)
+
+
 class RequestShapeTest(_Base):
     def _request(self, tool, args, principal=None):
         self.call(tool, args, principal=principal)

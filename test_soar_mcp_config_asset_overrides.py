@@ -159,6 +159,20 @@ class SoarMcpConfigAssetOverridesTest(unittest.TestCase):
         self.assertEqual(cfg.policy_client_key, "/a/k.pem")
         self.assertEqual(cfg.policy_ca, "/a/ca.pem")
 
+    def test_approval_playbook_default_is_off(self):
+        cfg = self._load_with("[policy]\nenabled = false\n", None)
+        self.assertEqual(cfg.approval_playbook, "")
+
+    def test_approval_playbook_from_mcp_conf_and_asset_override(self):
+        cfg = self._load_with("[policy]\napproval_playbook = conf_pb\n", None)
+        self.assertEqual(cfg.approval_playbook, "conf_pb")
+        cfg = self._load_with("[policy]\napproval_playbook = conf_pb\n",
+                              {"approval_playbook": " pm_freigabe "})
+        self.assertEqual(cfg.approval_playbook, "pm_freigabe")
+        cfg = self._load_with("[policy]\napproval_playbook = conf_pb\n",
+                              {"approval_playbook": ""})
+        self.assertEqual(cfg.approval_playbook, "")
+
     def test_policy_connection_absent_override_keeps_mcp_conf(self):
         cfg = self._load_with(
             "[policy]\nmode = service\nservice_url = https://conf.local\n",
