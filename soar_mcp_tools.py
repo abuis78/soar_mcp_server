@@ -5381,7 +5381,8 @@ def _start_approval_playbook(client: SoarApiClient, config: McpServerConfig,
                              case_id: int, inputs: dict) -> Optional[str]:
     """Start the approval input playbook on a case (proposal B). Internal REST
     call, not a tool call: no gate, no second decide. ``inputs`` goes as a
-    JSON-encoded string (SOAR On-Prem 8.x run-playbook API). Returns None on
+    JSON object (SOAR 8.7 rejects a JSON-encoded string with 400; B3 test on
+    SOAR-Prod 2026-11-02) and playbook_id as the numeric id. Returns None on
     success or an error string; the caller logs it with the freigabe_ref only."""
     pid = _resolve_playbook_id_by_name(config.approval_playbook, client, config)
     if not isinstance(pid, int):
@@ -5391,7 +5392,7 @@ def _start_approval_playbook(client: SoarApiClient, config: McpServerConfig,
         "playbook_id": pid,
         "scope": "new",
         "run": True,
-        "inputs": json.dumps(inputs),
+        "inputs": dict(inputs),
     }
     _data, err = client.post("playbook_run", body)
     return f"playbook_run failed: {err}" if err else None

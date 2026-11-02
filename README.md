@@ -521,7 +521,7 @@ case (`case_id` / `container_id`) is held, the app starts that playbook on the c
 string inputs: `freigabe_id`, `noetig`, `initiator`, `art`, `ziel` (comma-separated),
 `begruendung_kurz`, `ablauf`. The playbook asks the approval group and records the responder as
 approver via the Policy Manager. The start is an internal REST call (`POST /rest/playbook_run`,
-`inputs` as a JSON string), not a tool call: no gate, no second decision; it runs with the SOAR
+`inputs` as a JSON object, `playbook_id` as the numeric id), not a tool call: no gate, no second decision; it runs with the SOAR
 token of the requesting call, so that SOAR user needs permission to run playbooks. The ⏸ message
 says whether the request was sent. If the start fails (playbook not found, HTTP error), the hold
 stands and approvers use `approve_action`; nothing is executed. Without a case

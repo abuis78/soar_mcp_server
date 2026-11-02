@@ -6,7 +6,6 @@ All tests run against StubPolicyClient — no network, no Policy Manager.
 
 from __future__ import annotations
 
-import json
 import os
 import tempfile
 import unittest
@@ -287,8 +286,8 @@ class ApprovalPlaybookTest(_Base):
         body = runs[0]
         self.assertEqual((body["container_id"], body["playbook_id"], body["scope"], body["run"]),
                          (5, 841, "new", True))
-        self.assertIsInstance(body["inputs"], str)  # On-Prem 8.x: JSON-encoded string
-        inputs = json.loads(body["inputs"])
+        self.assertIsInstance(body["inputs"], dict)  # SOAR 8.7: object; a JSON string gives 400 (B3)
+        inputs = body["inputs"]
         self.assertEqual(inputs, {
             "freigabe_id": "ap-7788", "noetig": "2", "initiator": "alice", "art": "update_case_status",
             "ziel": "case_id=5", "begruendung_kurz": "r1->APPROVE_2PERSON",
