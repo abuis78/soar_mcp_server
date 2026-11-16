@@ -31,9 +31,10 @@ humans and brokers it is optional but, when present, must be well-formed.
 D22 (PolicyManager issue #16, interface variant A): ``urteil.datenlage`` is
 passed through as given; a missing value stays missing (the Policy Manager
 treats that as a gap). ``belege`` rows are checked against ``beleg_ids``, but
-the hit count ``treffer`` is always forwarded as ``null``: the server does not
-observe hit counts itself yet, and caller-reported counts must not be adopted
-(variant M1). Under PM rule ``beleg_inhalt`` this means APPROVE_1CLICK at least.
+a caller-reported ``treffer`` is never adopted (variant M1): the request gets
+one row per ``beleg_id`` whose count comes only from this server's own
+observation of a broker read (policy/observations.py), otherwise ``null``.
+Under PM rule ``beleg_inhalt`` an unobserved beleg means APPROVE_1CLICK at least.
 
 ASSUMPTION: the ``domaene`` value set comes from the design document §7
 (cyber / physisch / kognitiv); the Policy Manager spec shows only ``cyber``.
@@ -108,8 +109,9 @@ AGENT_CONTEXT_SCHEMA: dict = {
         "belege": {
             "type": "array", "maxItems": MAX_LIST_ITEMS,
             "description": ("Evidence rows (optional, D22), one per beleg_ids entry. Each beleg_id must "
-                            "be listed in beleg_ids. treffer is not adopted from the caller: the "
-                            "server forwards it as null."),
+                            "be listed in beleg_ids. treffer is never adopted from the caller: the "
+                            "server sends the hit count it observed itself for that id "
+                            "(broker read), else null."),
             "items": {
                 "type": "object",
                 "properties": {

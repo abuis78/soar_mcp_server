@@ -37,6 +37,7 @@ from policy.agent_context import describe_agent_context_error, validate_agent_co
 from policy.client import (PolicyClient, PolicyClientError, PolicyDecision, approval_ref,
                            build_policy_client)
 from policy.held_actions import HeldAction, HeldActionStore
+from policy.observations import get_observation_store
 
 logger = logging.getLogger("soar_mcp.policy")
 
@@ -124,9 +125,11 @@ def build_decide_request(
     *,
     asset_values: Optional[list] = None,
     playbook: Optional[dict] = None,
+    hit_lookup: Optional[Callable[[str, str], Optional[int]]] = None,
 ) -> dict:
     """Assemble the /v1/decide body (``DecisionRequest.to_wire`` shape).
-    Pure function, no I/O."""
+    No I/O of its own; ``hit_lookup(beleg_id, agent_id) -> int | None`` returns
+    a hit count this server observed itself (D22, policy/observations.py)."""
     args = arguments or {}
     ziel = [f"{k}={v}" for k, v in args.items()
             if k.endswith("_id") and k not in _NON_TARGET_IDS and k not in _GATE_ARGS
@@ -154,9 +157,12 @@ def build_decide_request(
     }
     if ctx.get("stufe") is not None:
         kontext["stufe"] = ctx["stufe"]
-    if "belege" in ctx:
-        # D22: only when the caller sent rows; never invented (treffer is None, M1).
-        kontext["belege"] = [dict(b) for b in ctx["belege"]]
+    if is_agent or "belege" in ctx:
+        # D22 (PM rule beleg_inhalt): one row per beleg_id, same order. treffer
+        # comes only from this server's own observation, never from the caller
+        # (M1); unobserved -> None, which the Policy Manager counts as no hit.
+        kontext["belege"] = [{"beleg_id": b, "treffer": _observed_hits(hit_lookup, b, kontext["agent_id"])}
+                             for b in kontext["beleg_ids"]]
     if is_agent:
         # MCP-W05: the only confidence source for agents is the checked judgement.
         konf = kontext["urteil"].get("konfidenz")
@@ -168,6 +174,18 @@ def build_decide_request(
         if isinstance(ac, (int, float)) and not isinstance(ac, bool):
             kontext["agent_konfidenz"] = float(ac)
     return {"aktion": aktion, "kontext": kontext}
+
+
+def _observed_hits(hit_lookup: Optional[Callable[[str, str], Optional[int]]],
+                   beleg_id: str, agent_id: str) -> Optional[int]:
+    if hit_lookup is None:
+        return None
+    try:
+        t = hit_lookup(beleg_id, agent_id)
+    except Exception as exc:  # noqa: BLE001 — a lookup failure only means "no hit"
+        logger.warning("[soar_mcp.policy] observation lookup failed: %s -> treffer=None", type(exc).__name__)
+        return None
+    return t if isinstance(t, int) and not isinstance(t, bool) and t >= 0 else None
 
 
 def principal_identity(principal: Any) -> str:
@@ -272,7 +290,8 @@ def decide_write_tool(
             logger.warning("[soar_mcp.policy] service enrichment failed case=%s: %s -> no values", case_id, exc)
 
     request = build_decide_request(tool_name, args, principal, agent_ctx,
-                                   asset_values=asset_values, playbook=playbook)
+                                   asset_values=asset_values, playbook=playbook,
+                                   hit_lookup=get_observation_store().treffer_for)
     try:
         decision = pm.decide(request)
     except PolicyClientError as exc:

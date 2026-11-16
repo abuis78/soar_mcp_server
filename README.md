@@ -497,10 +497,14 @@ collected from the case (same enrichment as the in-app layer) and the optional
 evidence is refused locally as `NO_EVIDENCE`, an incomplete judgement as `INCOMPLETE_JUDGEMENT`
 (no Policy Manager round-trip). Humans may omit it. Optional since D22: `urteil.datenlage`
 (`vollstaendig` / `teilweise` / `unbekannt` / `blinder_fleck`, passed through as given) and
-`belege` (`[{beleg_id, treffer}]`, each `beleg_id` must be in `beleg_ids`). The server does not
-count hits itself, so `treffer` is always forwarded as `null`; a missing field stays missing.
-With the Policy Manager rule `beleg_inhalt` this means agent writes via MCP need at least
-APPROVE_1CLICK. **Dry-runs** (`dry_run=true` on
+`belege` (`[{beleg_id, treffer}]`, each `beleg_id` must be in `beleg_ids`). A `treffer` sent by
+the caller is never adopted. For agent requests the server sends one row per `beleg_id`; `treffer`
+is the row count it observed itself when a **broker** token read with that `broker_aufruf_id`
+(`list_cases`, `search_cases`, `list_artifacts`, `list_case_notes`: rows returned; `get_case`,
+`get_artifact`: 1), bound to the broker's `agent_id` when given, kept 6 h in
+`local/observations.json` (count only, no content). Otherwise `treffer` is `null`. Under the
+Policy Manager rule `beleg_inhalt` (PM 0.6.0) an agent write needs at least APPROVE_1CLICK unless
+one beleg has `treffer >= 1` and `urteil.datenlage` is `vollstaendig`. **Dry-runs** (`dry_run=true` on
 `save_playbook_layout_only` and the custom-function draft tools) write nothing and skip the
 Policy Manager (audit only).
 
@@ -710,6 +714,14 @@ tail -f /var/log/phantom/soar/phantom.log | grep soar_mcp_handler
 ---
 
 ## Changelog
+
+### v1.20.0 (2026-11-16) — D22: data situation and observed evidence hits
+For `policy_mode = service` with Policy Manager 0.6.0 (rule `beleg_inhalt`, PolicyManager issue #16). **Human requests are unchanged.**
+- ✅ **`urteil.datenlage`** accepted in `agent_context` (`vollstaendig` / `teilweise` / `unbekannt` / `blinder_fleck`) and passed to the Policy Manager; a missing value stays missing (counts as a gap there).
+- ✅ **`kontext.belege`** — agent requests carry one `{beleg_id, treffer}` row per `beleg_id`. `treffer` is the row count this server observed itself for a broker read with that `broker_aufruf_id` (6 h, bound to the broker's `agent_id`, count only in `local/observations.json`), else `null`.
+- 🛡️ **Never from the caller** — a `treffer` sent in `agent_context.belege` is validated but not adopted.
+- ⚠️ **Effect** — with PM 0.6.0 an agent write needs at least APPROVE_1CLICK unless one beleg has an observed `treffer >= 1` and `datenlage` is `vollstaendig`. Evidence from other sources (e.g. Splunk searches via the Tool Broker) has no count here and therefore leads to approval.
+- 🧪 24 new tests (488 total).
 
 ### v1.19.0 (2026-11-02) — approval request in SOAR (approval_playbook)
 New opt-in feature for `policy_mode = service`. **No behaviour change while `approval_playbook` is empty (default).**

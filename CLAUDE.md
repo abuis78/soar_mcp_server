@@ -14,10 +14,10 @@ approvals / `approve_action`, broker tokens).
 
 ## Commands
 - Tests: `python3 -m unittest discover -s . -p 'test_*.py' > <scratch>/tests.log 2>&1`,
-  then check for `Ran N tests` + `OK` in the file (current baseline: 464).
+  then check for `Ran N tests` + `OK` in the file (current baseline: 488).
 - Package (from a clean `HEAD`):
   1. `git archive --prefix=soar_mcp_server/ HEAD | tar -x -C <tmp>`
-  2. In `<tmp>/soar_mcp_server`, delete `releases scripts .github .gitignore test_*.py`.
+  2. In `<tmp>/soar_mcp_server`, delete `releases scripts .github .gitignore test_*.py CLAUDE.md`.
   3. `COPYFILE_DISABLE=1 tar --no-xattrs --no-mac-metadata -czf releases/soar_mcp_server_v<ver>.tar -C <tmp> soar_mcp_server`
   4. `python3 scripts/lint_soar_app_package.py releases/soar_mcp_server_v<ver>.tar`
   5. `git add -f releases/soar_mcp_server_v<ver>.tar`
