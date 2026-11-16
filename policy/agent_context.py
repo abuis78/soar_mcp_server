@@ -14,8 +14,10 @@ every write tool accepts ONE optional object::
             empfehlung:     "...",
             gegenargumente: ["..."],
             unsicherheiten: ["..."],
-            konfidenz:      0.72                   # 0..1 (MCP-W05: the only confidence source)
-        }
+            konfidenz:      0.72,                  # 0..1 (MCP-W05: the only confidence source)
+            datenlage:      "vollstaendig"         # optional, D22 (see DATENLAGE)
+        },
+        belege: [{beleg_id: "tb-...", treffer: null}]  # optional, D22
     }
 
 Wire names are the spec names on purpose (Runtime concept E7). Python code
@@ -25,6 +27,13 @@ This module only validates and normalises. Whether the object is required
 depends on the caller: for ``principal_type = agent`` it is (NO_EVIDENCE /
 INCOMPLETE_JUDGEMENT mirror the Policy Manager's own refusal, PM §9); for
 humans and brokers it is optional but, when present, must be well-formed.
+
+D22 (PolicyManager issue #16, interface variant A): ``urteil.datenlage`` is
+passed through as given; a missing value stays missing (the Policy Manager
+treats that as a gap). ``belege`` rows are checked against ``beleg_ids``, but
+the hit count ``treffer`` is always forwarded as ``null``: the server does not
+observe hit counts itself yet, and caller-reported counts must not be adopted
+(variant M1). Under PM rule ``beleg_inhalt`` this means APPROVE_1CLICK at least.
 
 ASSUMPTION: the ``domaene`` value set comes from the design document §7
 (cyber / physisch / kognitiv); the Policy Manager spec shows only ``cyber``.
@@ -42,6 +51,9 @@ INVALID_AGENT_CONTEXT = "INVALID_AGENT_CONTEXT"
 DOMAENEN: tuple[str, ...] = ("cyber", "physisch", "kognitiv")
 TIPPING_OFF: tuple[str, ...] = ("laut", "leise")
 STUFE_MIN, STUFE_MAX = 0, 4
+# D22: closed value set, same as soar_agent_runtime DATENLAGE_VALUES. Only
+# "vollstaendig" counts as complete in the Policy Manager.
+DATENLAGE: tuple[str, ...] = ("vollstaendig", "teilweise", "unbekannt", "blinder_fleck")
 
 # Size limits: the object travels into audit lines and to the Policy Manager.
 MAX_ID_LEN = 128
@@ -87,8 +99,26 @@ AGENT_CONTEXT_SCHEMA: dict = {
                                                   "non-empty entry, e.g. 'keine erkannt')."},
                 "konfidenz": {"type": "number", "minimum": 0, "maximum": 1,
                               "description": "Confidence 0..1 (required for agents)."},
+                "datenlage": {"type": "string", "enum": list(DATENLAGE),
+                              "description": "Data situation (optional, D22). Only 'vollstaendig' "
+                                             "counts as complete; any other value or none means a gap."},
             },
             "additionalProperties": False,
+        },
+        "belege": {
+            "type": "array", "maxItems": MAX_LIST_ITEMS,
+            "description": ("Evidence rows (optional, D22), one per beleg_ids entry. Each beleg_id must "
+                            "be listed in beleg_ids. treffer is not adopted from the caller: the "
+                            "server forwards it as null."),
+            "items": {
+                "type": "object",
+                "properties": {
+                    "beleg_id": {"type": "string", "maxLength": MAX_ID_LEN},
+                    "treffer": {"type": ["integer", "null"], "minimum": 0},
+                },
+                "required": ["beleg_id"],
+                "additionalProperties": False,
+            },
         },
     },
     "additionalProperties": False,
@@ -149,6 +179,37 @@ def _validate_urteil(raw: object) -> dict:
         if not 0.0 <= float(k) <= 1.0:
             raise _Invalid("urteil.konfidenz must be between 0 and 1")
         out["konfidenz"] = float(k)
+    if "datenlage" in raw:
+        dl = _str(raw["datenlage"], "urteil.datenlage", 32).lower()
+        if dl not in DATENLAGE:
+            raise _Invalid(f"urteil.datenlage must be one of {list(DATENLAGE)}")
+        out["datenlage"] = dl
+    return out
+
+
+def _validate_belege(raw: object, beleg_ids: list[str]) -> list[dict]:
+    """D22 rows. Shape is checked; ``treffer`` is always forwarded as None
+    (variant M1: no caller-reported hit counts)."""
+    if not isinstance(raw, list):
+        raise _Invalid("belege must be a list of objects")
+    if len(raw) > MAX_LIST_ITEMS:
+        raise _Invalid(f"belege has more than {MAX_LIST_ITEMS} items")
+    out: list[dict] = []
+    for i, row in enumerate(raw):
+        if not isinstance(row, dict):
+            raise _Invalid(f"belege[{i}] must be an object")
+        unknown = set(row) - {"beleg_id", "treffer"}
+        if unknown:
+            raise _Invalid(f"belege[{i}] has unknown fields: {sorted(unknown)}")
+        if "beleg_id" not in row:
+            raise _Invalid(f"belege[{i}].beleg_id is required")
+        bid = _str(row["beleg_id"], f"belege[{i}].beleg_id", MAX_ID_LEN)
+        if bid not in beleg_ids:
+            raise _Invalid(f"belege[{i}].beleg_id is not listed in beleg_ids")
+        t = row.get("treffer")
+        if t is not None and (isinstance(t, bool) or not isinstance(t, int) or t < 0):
+            raise _Invalid(f"belege[{i}].treffer must be an integer >= 0 or null")
+        out.append({"beleg_id": bid, "treffer": None})
     return out
 
 
@@ -203,6 +264,8 @@ def _validate(raw: object, *, required: bool) -> tuple[Optional[dict], Optional[
             out["beleg_ids"] = _str_list(raw["beleg_ids"], "beleg_ids", MAX_ID_LEN)
         if "urteil" in raw:
             out["urteil"] = _validate_urteil(raw["urteil"])
+        if "belege" in raw:
+            out["belege"] = _validate_belege(raw["belege"], out.get("beleg_ids") or [])
     except _Invalid as exc:
         return None, INVALID_AGENT_CONTEXT, str(exc)
 

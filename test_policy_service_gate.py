@@ -432,6 +432,21 @@ class RequestShapeTest(_Base):
             self.assertEqual(req["kontext"][k], AGENT_CTX[k])
         self.assertEqual(req["kontext"]["agent_konfidenz"], 0.8)
 
+    def test_d22_datenlage_and_belege_reach_kontext(self):
+        ctx = dict(AGENT_CTX, urteil=dict(AGENT_CTX["urteil"], datenlage="teilweise"),
+                   belege=[{"beleg_id": "tb-1", "treffer": 5}])
+        req = self._request("update_case_severity", {"case_id": 1, "severity": "high", "agent_context": ctx},
+                            principal=_principal("agent", "a1"))
+        self.assertEqual(req["kontext"]["urteil"]["datenlage"], "teilweise")
+        self.assertEqual(req["kontext"]["belege"], [{"beleg_id": "tb-1", "treffer": None}])
+        self.assertEqual(req["kontext"]["beleg_ids"], ["tb-1"])
+
+    def test_d22_absent_fields_are_not_invented(self):
+        req = self._request("update_case_severity", {"case_id": 1, "severity": "high", "agent_context": AGENT_CTX},
+                            principal=_principal("agent", "a1"))
+        self.assertNotIn("belege", req["kontext"])
+        self.assertNotIn("datenlage", req["kontext"]["urteil"])
+
     def test_correlation_ids_are_not_targets(self):
         req = self._request("add_case_note", {"case_id": 1, "note": "n", "lauf_id": "r", "broker_aufruf_id": "b"})
         self.assertEqual(req["aktion"]["ziel"], ["case_id=1"])

@@ -163,6 +163,65 @@ class SchemaAttachmentTest(unittest.TestCase):
         self.assertEqual(AGENT_CONTEXT_SCHEMA["properties"]["urteil"]["properties"]["konfidenz"]["maximum"], 1)
 
 
+class D22BelegeDatenlageTest(unittest.TestCase):
+    """D22 (PolicyManager #16): urteil.datenlage and belege."""
+
+    def _with(self, **changes):
+        ctx = json.loads(json.dumps(FULL))
+        ctx.update(changes)
+        return ctx
+
+    def test_datenlage_values_are_accepted_and_kept(self):
+        for value in ("vollstaendig", "teilweise", "unbekannt", "blinder_fleck"):
+            urteil = dict(FULL["urteil"], datenlage=value)
+            ctx, code = validate_agent_context(self._with(urteil=urteil), required=True)
+            self.assertIsNone(code, value)
+            self.assertEqual(ctx["urteil"]["datenlage"], value)
+
+    def test_datenlage_invalid_is_rejected(self):
+        for bad in ("komplett", "", 1, None):
+            urteil = dict(FULL["urteil"], datenlage=bad)
+            _ctx, code = validate_agent_context(self._with(urteil=urteil), required=True)
+            self.assertEqual(code, INVALID_AGENT_CONTEXT, repr(bad))
+
+    def test_missing_fields_stay_missing(self):
+        # Nothing is invented: no datenlage, no belege when the caller sent none.
+        ctx, code = validate_agent_context(FULL, required=True)
+        self.assertIsNone(code)
+        self.assertNotIn("datenlage", ctx["urteil"])
+        self.assertNotIn("belege", ctx)
+
+    def test_belege_treffer_is_never_adopted_from_the_caller(self):
+        ctx, code = validate_agent_context(
+            self._with(belege=[{"beleg_id": "tb-2026-10-17-000231", "treffer": 7}]), required=True)
+        self.assertIsNone(code)
+        self.assertEqual(ctx["belege"], [{"beleg_id": "tb-2026-10-17-000231", "treffer": None}])
+        ctx, _ = validate_agent_context(self._with(belege=[{"beleg_id": "tb-2026-10-17-000231"}]),
+                                        required=True)
+        self.assertEqual(ctx["belege"], [{"beleg_id": "tb-2026-10-17-000231", "treffer": None}])
+
+    def test_belege_invalid_shapes(self):
+        bad_rows = [
+            "tb-1",
+            [{"treffer": 1}],
+            [{"beleg_id": "not-in-beleg-ids", "treffer": 1}],
+            [{"beleg_id": "tb-2026-10-17-000231", "treffer": -1}],
+            [{"beleg_id": "tb-2026-10-17-000231", "treffer": True}],
+            [{"beleg_id": "tb-2026-10-17-000231", "treffer": "3"}],
+            [{"beleg_id": "tb-2026-10-17-000231", "extra": 1}],
+            ["tb-2026-10-17-000231"],
+        ]
+        for belege in bad_rows:
+            _ctx, code = validate_agent_context(self._with(belege=belege), required=True)
+            self.assertEqual(code, INVALID_AGENT_CONTEXT, repr(belege))
+
+    def test_schema_lists_datenlage_and_belege(self):
+        props = AGENT_CONTEXT_SCHEMA["properties"]
+        self.assertEqual(props["urteil"]["properties"]["datenlage"]["enum"],
+                         ["vollstaendig", "teilweise", "unbekannt", "blinder_fleck"])
+        self.assertFalse(props["belege"]["items"]["additionalProperties"])
+
+
 class LaufIdAuditTest(unittest.TestCase):
     def test_lauf_id_from_arguments_prefers_agent_context(self):
         self.assertEqual(lauf_id_from_arguments({"agent_context": {"lauf_id": "ctx"}, "lauf_id": "top"}), "ctx")

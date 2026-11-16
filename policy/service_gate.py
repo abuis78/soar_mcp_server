@@ -154,6 +154,9 @@ def build_decide_request(
     }
     if ctx.get("stufe") is not None:
         kontext["stufe"] = ctx["stufe"]
+    if "belege" in ctx:
+        # D22: only when the caller sent rows; never invented (treffer is None, M1).
+        kontext["belege"] = [dict(b) for b in ctx["belege"]]
     if is_agent:
         # MCP-W05: the only confidence source for agents is the checked judgement.
         konf = kontext["urteil"].get("konfidenz")

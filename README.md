@@ -495,7 +495,12 @@ collected from the case (same enrichment as the in-app layer) and the optional
 `tipping_off`, `beleg_ids`, `urteil` with `empfehlung` / `gegenargumente` / `unsicherheiten` /
 `konfidenz`). For **agent** tokens `agent_context` is mandatory in `service` mode: missing
 evidence is refused locally as `NO_EVIDENCE`, an incomplete judgement as `INCOMPLETE_JUDGEMENT`
-(no Policy Manager round-trip). Humans may omit it. **Dry-runs** (`dry_run=true` on
+(no Policy Manager round-trip). Humans may omit it. Optional since D22: `urteil.datenlage`
+(`vollstaendig` / `teilweise` / `unbekannt` / `blinder_fleck`, passed through as given) and
+`belege` (`[{beleg_id, treffer}]`, each `beleg_id` must be in `beleg_ids`). The server does not
+count hits itself, so `treffer` is always forwarded as `null`; a missing field stays missing.
+With the Policy Manager rule `beleg_inhalt` this means agent writes via MCP need at least
+APPROVE_1CLICK. **Dry-runs** (`dry_run=true` on
 `save_playbook_layout_only` and the custom-function draft tools) write nothing and skip the
 Policy Manager (audit only).
 
