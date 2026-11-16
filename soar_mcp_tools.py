@@ -744,7 +744,7 @@ TOOL_SCHEMAS: dict[str, dict] = {
     "list_apps": {
         "description": (
             "List installed SOAR apps/connectors. "
-            "Returns app ID, name, publisher, product name, and supported action names. "
+            "Returns app ID, name, installed app version, publisher, product name, and supported action names. "
             "Use this to discover which connectors are available before building a playbook."
         ),
         "inputSchema": {
@@ -2293,8 +2293,9 @@ def tool_list_apps(client: SoarApiClient, config: McpServerConfig, args: dict) -
             + (" …" if len(supported) > 5 else "")
             if supported else "actions unknown (call get_action_schema)"
         )
+        version = a.get("app_version") or a.get("version") or "unknown"
         lines.append(
-            f"\n  ID: {a.get('id')} | {a.get('name', '(unnamed)')}\n"
+            f"\n  ID: {a.get('id')} | {a.get('name', '(unnamed)')} | Version: {version}\n"
             f"    Vendor: {a.get('product_vendor') or a.get('publisher') or 'unknown'} | "
             f"Product: {a.get('product_name', 'unknown')}\n"
             f"    {actions_str}"

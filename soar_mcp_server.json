@@ -300,7 +300,7 @@
             "order": 96
         },
         "tool_list_apps": {
-            "description": "READ \u2014 list_apps: List installed SOAR apps/connectors (name, vendor, supported actions). Used by the playbook-builder skill for connector discovery.",
+            "description": "READ \u2014 list_apps: List installed SOAR apps/connectors (name, app version, vendor, supported actions). Used by the playbook-builder skill for connector discovery.",
             "data_type": "boolean",
             "default": true,
             "required": false,
