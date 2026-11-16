@@ -715,6 +715,11 @@ tail -f /var/log/phantom/soar/phantom.log | grep soar_mcp_handler
 
 ## Changelog
 
+### v1.21.0 (2026-11-16) — app version in list_apps
+**No behaviour change apart from the extra field.**
+- ✅ **`list_apps`** shows `Version: <app_version>` on each app line (fallback `version`, else `unknown`), so the installed version of an app can be read without the SOAR UI.
+- 🧪 4 new tests (492 total).
+
 ### v1.20.0 (2026-11-16) — D22: data situation and observed evidence hits
 For `policy_mode = service` with Policy Manager 0.6.0 (rule `beleg_inhalt`, PolicyManager issue #16). **Human requests are unchanged.**
 - ✅ **`urteil.datenlage`** accepted in `agent_context` (`vollstaendig` / `teilweise` / `unbekannt` / `blinder_fleck`) and passed to the Policy Manager; a missing value stays missing (counts as a gap there).
