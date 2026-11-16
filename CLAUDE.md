@@ -24,8 +24,9 @@ approvals / `approve_action`, broker tokens).
 - Release: bump `app_version` + README changelog, commit the package, PR, merge, then
   tag `v<ver>` and `gh release create v<ver>` with asset name `soar_mcp_server-<ver>.tar`.
 
-## Status (2026-11-16)
-- SPEC-MCP rebuild done (phases 1–4, v1.15.0–v1.18.2). Current: v1.19.0 (`approval_playbook`), live.
+## Status (2026-11-16, after v1.20.0)
+- SPEC-MCP rebuild done (phases 1–4, v1.15.0–v1.18.2). v1.19.0 (`approval_playbook`) live on SOAR-Prod.
+- v1.20.0 (D22: `urteil.datenlage`, observed `belege[].treffer` for PM 0.6.0) released 2026-11-16, not installed on SOAR-Prod.
 - Next, conditional:
   - Swap `policy/client.py` for the `policy_client` wheel once PolicyManager P3 ships `ServicePolicyClient`.
   - End-to-end test of `pm_freigabe`: needs the role `SOC-Freigabe` and the asset `pm_approve` on SOAR-Prod (setup side).
