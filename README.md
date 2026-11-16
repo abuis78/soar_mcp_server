@@ -715,6 +715,14 @@ tail -f /var/log/phantom/soar/phantom.log | grep soar_mcp_handler
 
 ## Changelog
 
+### v1.20.0 (2026-11-16) — D22: data situation and observed evidence hits
+For `policy_mode = service` with Policy Manager 0.6.0 (rule `beleg_inhalt`, PolicyManager issue #16). **Human requests are unchanged.**
+- ✅ **`urteil.datenlage`** accepted in `agent_context` (`vollstaendig` / `teilweise` / `unbekannt` / `blinder_fleck`) and passed to the Policy Manager; a missing value stays missing (counts as a gap there).
+- ✅ **`kontext.belege`** — agent requests carry one `{beleg_id, treffer}` row per `beleg_id`. `treffer` is the row count this server observed itself for a broker read with that `broker_aufruf_id` (6 h, bound to the broker's `agent_id`, count only in `local/observations.json`), else `null`.
+- 🛡️ **Never from the caller** — a `treffer` sent in `agent_context.belege` is validated but not adopted.
+- ⚠️ **Effect** — with PM 0.6.0 an agent write needs at least APPROVE_1CLICK unless one beleg has an observed `treffer >= 1` and `datenlage` is `vollstaendig`. Evidence from other sources (e.g. Splunk searches via the Tool Broker) has no count here and therefore leads to approval.
+- 🧪 24 new tests (488 total).
+
 ### v1.19.0 (2026-11-02) — approval request in SOAR (approval_playbook)
 New opt-in feature for `policy_mode = service`. **No behaviour change while `approval_playbook` is empty (default).**
 - ✅ **New asset field `approval_playbook`** (also `mcp.conf [policy] approval_playbook`) — name of a SOAR input playbook (e.g. `pm_freigabe` from soar_pm_admin). When a write tool with a case is held for approval (`APPROVE_1CLICK` / `APPROVE_2PERSON`), the app starts it on the case with seven string inputs (`freigabe_id`, `noetig`, `initiator`, `art`, `ziel`, `begruendung_kurz`, `ablauf`) so the approval group in SOAR learns about the pending approval.
