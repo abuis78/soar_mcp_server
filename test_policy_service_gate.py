@@ -13,6 +13,7 @@ from unittest.mock import patch
 
 import policy.service_gate as sg
 from policy.held_actions import HeldActionStore
+from policy.observations import ObservationStore, set_observation_store_override
 from policy.client import PolicyClientError, PolicyDecision, StubPolicyClient, approval_ref
 from soar_mcp_config import ALL_TOOLS, READ_ONLY_TOOLS, McpServerConfig
 from soar_mcp_tokens import Principal, TokenVerification
@@ -74,6 +75,9 @@ class _Base(unittest.TestCase):
         self.held = HeldActionStore(os.path.join(self.tmp.name, "held_actions.json"))
         sg.set_held_store_override(self.held)
         self.addCleanup(sg.set_held_store_override, None)
+        self.observations = ObservationStore(os.path.join(self.tmp.name, "observations.json"))
+        set_observation_store_override(self.observations)
+        self.addCleanup(set_observation_store_override, None)
         self.client = _FakeClient()
         self._hp = patch.dict("soar_mcp_tools._TOOL_HANDLERS", _HANDLER_PATCH)
         self._hp.start()
@@ -441,11 +445,16 @@ class RequestShapeTest(_Base):
         self.assertEqual(req["kontext"]["belege"], [{"beleg_id": "tb-1", "treffer": None}])
         self.assertEqual(req["kontext"]["beleg_ids"], ["tb-1"])
 
-    def test_d22_absent_fields_are_not_invented(self):
+    def test_d22_agent_gets_one_row_per_beleg_id_and_no_invented_datenlage(self):
+        # Unobserved evidence -> treffer None (PM: no hit); datenlage is the agent's, never invented.
         req = self._request("update_case_severity", {"case_id": 1, "severity": "high", "agent_context": AGENT_CTX},
                             principal=_principal("agent", "a1"))
-        self.assertNotIn("belege", req["kontext"])
+        self.assertEqual(req["kontext"]["belege"], [{"beleg_id": "tb-1", "treffer": None}])
         self.assertNotIn("datenlage", req["kontext"]["urteil"])
+
+    def test_d22_human_without_belege_gets_no_rows(self):
+        req = self._request("add_case_note", {"case_id": 1, "note": "n"})
+        self.assertNotIn("belege", req["kontext"])
 
     def test_correlation_ids_are_not_targets(self):
         req = self._request("add_case_note", {"case_id": 1, "note": "n", "lauf_id": "r", "broker_aufruf_id": "b"})

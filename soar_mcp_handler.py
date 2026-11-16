@@ -49,6 +49,8 @@ except Exception:  # noqa: BLE001
         """Fallback (PM-F42): never let a raw approval id reach the audit log."""
         return "<redacted>" if freigabe_id else "-"
 
+from policy.observations import get_observation_store, reset_hits, take_hits
+
 try:
     from soar_mcp_tokens import Principal, TokenStore, TokenVerification, sanitise_args_for_audit
 except Exception:  # noqa: BLE001
@@ -506,12 +508,33 @@ class SoarMcpRestHandler(dict):
         # SPEC-MCP MCP-W04: the full caller identity (type, token_id, agent_id)
         # for the Policy Manager adapter. Legacy ph-auth-token -> mensch, legacy.
         principal = Principal.from_verification(token_verification) if Principal is not None else None
+        reset_hits()
         result_text = call_tool(tool_name, arguments, client, config,
                                 actor_id=actor_id, principal=principal)
         is_error = self._is_tool_error(result_text)
+        self._record_observation(token_verification, tool_name, arguments, take_hits(), is_error)
         self._audit_tool_result(token_verification, tool_name, arguments,
                                 result=self._classify_result(result_text, is_error))
         return {"content": [{"type": "text", "text": result_text}], "isError": is_error}
+
+    @classmethod
+    def _record_observation(cls, token_verification, tool_name: str, arguments: dict,
+                            hits, is_error: bool) -> None:
+        """D22 (PolicyManager #16, M1): remember the hit count of a broker read
+        under its broker_aufruf_id, so an agent citing that id in beleg_ids gets
+        an observed treffer. Only broker reads of READ_ONLY_TOOLS that reported
+        a count and did not fail. Best-effort: a failure only means no count."""
+        if hits is None or is_error or tool_name not in READ_ONLY_TOOLS:
+            return
+        if not cls._is_broker(token_verification):
+            return
+        args = arguments if isinstance(arguments, dict) else {}
+        agent_id = getattr(token_verification, "agent_id", None) or args.get("agent_id") or ""
+        try:
+            get_observation_store().record(str(args.get("broker_aufruf_id") or ""), hits,
+                                           tool=tool_name, agent_id=str(agent_id))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[SOAR MCP] observation not recorded tool=%s: %s", tool_name, type(exc).__name__)
 
     @staticmethod
     def _classify_result(result_text: str, is_error: bool) -> str:

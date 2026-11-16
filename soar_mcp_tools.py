@@ -1248,6 +1248,7 @@ def tool_list_cases(client: SoarApiClient, config: McpServerConfig, args: dict) 
     if scope_filtering:
         items = [c for c in items if _case_in_scope(c, config)]
 
+    note_hits(min(len(items), limit))  # D22: rows returned, observed here
     if not items:
         return "No cases found matching the specified filters."
 
@@ -1276,6 +1277,7 @@ def tool_get_case(client: SoarApiClient, config: McpServerConfig, args: dict) ->
     # the allowed labels / below min_severity must not be readable by ID either.
     if not _case_in_scope(data, config):
         return f"Case #{case_id} is outside the MCP-allowed scope (label/severity restriction)."
+    note_hits(1)  # D22: one case record returned
 
     # Fetch artifact count
     art_data, _ = client.get("artifact", params={"_filter_container_id": case_id, "page_size": 1})
@@ -1341,6 +1343,7 @@ def tool_search_cases(client: SoarApiClient, config: McpServerConfig, args: dict
     # Enforce the configured MCP access controls (issue #41).
     if scope_filtering:
         items = [c for c in items if _case_in_scope(c, config)]
+    note_hits(min(len(items), limit))  # D22: rows returned, observed here
     if not items:
         return f"No cases found matching '{query}'."
 
@@ -1376,6 +1379,7 @@ def tool_list_artifacts(client: SoarApiClient, config: McpServerConfig, args: di
 
     items = data if isinstance(data, list) else data.get("data", [])
     total = data.get("count", len(items)) if isinstance(data, dict) else len(items)
+    note_hits(len(items))  # D22: rows returned, observed here
     if not items:
         return f"No artifacts found for case {case_id}" + (f" of type '{art_type}'" if art_type else "") + "."
 
@@ -1397,6 +1401,7 @@ def tool_get_artifact(client: SoarApiClient, config: McpServerConfig, args: dict
         return f"Error fetching artifact {artifact_id}: {err}"
     if not isinstance(data, dict):
         return f"Unexpected response for artifact {artifact_id}."
+    note_hits(1)  # D22: one artifact record returned
 
     cef = data.get("cef") or {}
     cef_lines = "\n".join(f"    {k}: {v}" for k, v in cef.items()) or "    (none)"
@@ -1431,6 +1436,7 @@ def tool_list_case_notes(client: SoarApiClient, config: McpServerConfig, args: d
 
     items = data if isinstance(data, list) else data.get("data", [])
     total = data.get("count", len(items)) if isinstance(data, dict) else len(items)
+    note_hits(len(items))  # D22: rows returned, observed here
     if not items:
         return f"No notes found for case #{case_id}."
 
@@ -2301,6 +2307,7 @@ def tool_list_apps(client: SoarApiClient, config: McpServerConfig, args: dict) -
 # ==============================================================================
 
 from soar_mcp_utils import redact_nested  # noqa: E402 — after stdlib imports
+from policy.observations import note_hits  # noqa: E402 — D22 observed hit counts
 
 
 # ── Shared COA helpers ─────────────────────────────────────────────────────────
