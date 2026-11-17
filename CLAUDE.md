@@ -14,7 +14,7 @@ approvals / `approve_action`, broker tokens).
 
 ## Commands
 - Tests: `python3 -m unittest discover -s . -p 'test_*.py' > <scratch>/tests.log 2>&1`,
-  then check for `Ran N tests` + `OK` in the file (current baseline: 488).
+  then check for `Ran N tests` + `OK` in the file (current baseline: 492).
 - Package (from a clean `HEAD`):
   1. `git archive --prefix=soar_mcp_server/ HEAD | tar -x -C <tmp>`
   2. In `<tmp>/soar_mcp_server`, delete `releases scripts .github .gitignore test_*.py CLAUDE.md`.
@@ -24,10 +24,12 @@ approvals / `approve_action`, broker tokens).
 - Release: bump `app_version` + README changelog, commit the package, PR, merge, then
   tag `v<ver>` and `gh release create v<ver>` with asset name `soar_mcp_server-<ver>.tar`.
 
-## Status (2026-11-16, after v1.20.0)
+## Status (2026-11-17, after v1.21.0)
 - SPEC-MCP rebuild done (phases 1–4, v1.15.0–v1.18.2). v1.19.0 (`approval_playbook`) was live on SOAR-Prod from 2026-11-04.
 - v1.20.0 (D22: `urteil.datenlage`, observed `belege[].treffer` for PM 0.6.0) released and installed on SOAR-Prod 2026-11-16,
   Test Connectivity done. Still legacy mode: the D22 checks take effect only once service mode is active.
+- v1.21.0 (`list_apps` shows `Version: <app_version>`) released 2026-11-16, installed on SOAR-Prod 2026-11-17,
+  Test Connectivity done. Confirmed live: `/rest/app` returns `app_version`.
 - Next, conditional:
   - Swap `policy/client.py` for the `policy_client` wheel once PolicyManager P3 ships `ServicePolicyClient`.
   - End-to-end test of `pm_freigabe`: needs the role `SOC-Freigabe` and the asset `pm_approve` on SOAR-Prod (setup side).
